@@ -1,0 +1,39 @@
+checkpoints/*
+checkpoints_128/*
+checkpoints_new/*
+checkpoints_newer/*
+checkpoints_old/*
+ckpts_backup/*
+scibert/*
+__pycache__/*
+*.pyc
+train_val_256_desc_states.pt
+test_desc_states.pt
+
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environments
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Logs
+*.log
+logs/
+
+# Checkpoints / model weights
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+
+# Cache
+.cache/
+*.tmp

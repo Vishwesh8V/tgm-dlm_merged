@@ -1,0 +1,3 @@
+{"step": 0, "loss": 5.726805, "mse": 1.067802, "decoder_nll": 4.659003, "tT_loss": 0.0}
+{"step": 0, "loss": 5.799775, "mse": 1.076833, "decoder_nll": 4.666071, "tT_loss": 0.0, "ms": {"mean_embed_norm": 5.687133, "reg_term_value": 0.056871, "reg_term_frac": 0.009806, "embed_dist_to_tokens": 7.878401, "mask_rate_mean": 0.0242, "mask_rate_by_t_bucket": [0.0242, null, null]}}
+{"step": 0, "loss": 25270.771484, "mse": 25266.048828, "decoder_nll": 4.665184, "tT_loss": 0.0, "ms": {"mean_embed_norm": 5.687133, "reg_term_value": 0.056871, "reg_term_frac": 2e-06, "embed_dist_to_tokens": 7.878401, "mask_rate_mean": 0.143367, "mask_rate_by_t_bucket": [0.116, 0.1586, 0.1828]}}

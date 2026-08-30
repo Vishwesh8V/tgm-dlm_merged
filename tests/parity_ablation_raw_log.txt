@@ -1,0 +1,273 @@
+
+================================================================================
+RUNNING: §7.1 / §4.5 std.std() Initial & Post-Refit Drift Test (test_std_drift.py)
+================================================================================
+IN SMI_ORI
+0807checkpoint in Diffusion LM REGEX AUG!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+================================================================================
+TEST: Initial std.std() Drift Across Positions at Step 0 and Post-Refits
+================================================================================
+training mode is  e2e
+training mode is  e2e
+
+============================================================
+[AdaptiveNoise] INITIALISED
+  T (diffusion steps):   2000
+  S (token_max_length):  256
+  Loss buckets (T//g):   40  (granularity=50)
+  Schedule refit every:  500 steps
+  Warmup (2x stride):    1000 steps
+  Save dir:              C:\Users\vishw\Desktop\Diffusion Models\Generation\Models\tgm-dlm_merged\tests\_tmp_save_dir
+============================================================
+
+[AdaptiveNoise] _expand_schedule_to_2d: all arrays now shape (2000, 256)
+[Step 0 Initialization]:
+  Mean std value at t=0 across positions: 1.21001295745372772e-01
+  std.std() across positions at t=0:      1.49303502894326812e-08
+
+[Simulating 5 Refits with Asymmetric Per-Position Loss]:
+
+============================================================
+[AdaptiveNoise | step 500] *** REFITTING SCHEDULE ***
+  Raw loss_dist: mean=0.00319, min=0.00005, max=0.00997
+  Monotonicity violations corrected: 6342
+  New schedule: shape=(2000, 256), range=[0.00000, 0.98536]
+  Max alpha_bar change from previous schedule: 0.216582
+  Mean alpha_bar change from previous schedule: 0.040524
+  alpha_bar at t=T//2, std across positions: 0.048267  (how much positions have diverged)
+  alpha_bar at t=T//2, min/max: 0.15301 / 0.41195
+  Saved .npy snapshots to: C:\Users\vishw\Desktop\Diffusion Models\Generation\Models\tgm-dlm_merged\tests\_tmp_save_dir/
+  Loss history reset for next window.
+============================================================
+
+  Refit #1 (step 500):
+    Mean std at t=0:           1.21001295745372772e-01
+    std.std() across positions:1.49303502894326812e-08
+    Max pos diff from init:    0.00000000000000000e+00
+
+============================================================
+[AdaptiveNoise | step 1000] *** REFITTING SCHEDULE ***
+  Raw loss_dist: mean=0.00318, min=0.00005, max=0.00989
+  Monotonicity violations corrected: 6426
+  New schedule: shape=(2000, 256), range=[0.00000, 0.98536]
+  Max alpha_bar change from previous schedule: 0.267086
+  Mean alpha_bar change from previous schedule: 0.037994
+  alpha_bar at t=T//2, std across positions: 0.069064  (how much positions have diverged)
+  alpha_bar at t=T//2, min/max: 0.01463 / 0.42952
+  Saved .npy snapshots to: C:\Users\vishw\Desktop\Diffusion Models\Generation\Models\tgm-dlm_merged\tests\_tmp_save_dir/
+  Loss history reset for next window.
+============================================================
+
+  Refit #2 (step 1000):
+    Mean std at t=0:           1.21001295745372772e-01
+    std.std() across positions:1.49303502894326812e-08
+    Max pos diff from init:    0.00000000000000000e+00
+
+============================================================
+[AdaptiveNoise | step 1500] *** REFITTING SCHEDULE ***
+  Raw loss_dist: mean=0.00318, min=0.00005, max=0.01000
+  Monotonicity violations corrected: 6376
+  New schedule: shape=(2000, 256), range=[0.00000, 0.98536]
+  Max alpha_bar change from previous schedule: 0.318518
+  Mean alpha_bar change from previous schedule: 0.034282
+  alpha_bar at t=T//2, std across positions: 0.079917  (how much positions have diverged)
+  alpha_bar at t=T//2, min/max: 0.00277 / 0.41273
+  Saved .npy snapshots to: C:\Users\vishw\Desktop\Diffusion Models\Generation\Models\tgm-dlm_merged\tests\_tmp_save_dir/
+  Loss history reset for next window.
+============================================================
+
+  Refit #3 (step 1500):
+    Mean std at t=0:           1.21001295745372772e-01
+    std.std() across positions:1.49303502894326812e-08
+    Max pos diff from init:    0.00000000000000000e+00
+
+============================================================
+[AdaptiveNoise | step 2000] *** REFITTING SCHEDULE ***
+  Raw loss_dist: mean=0.00319, min=0.00005, max=0.00999
+  Monotonicity violations corrected: 6380
+  New schedule: shape=(2000, 256), range=[0.00000, 0.98536]
+  Max alpha_bar change from previous schedule: 0.419712
+  Mean alpha_bar change from previous schedule: 0.033712
+  alpha_bar at t=T//2, std across positions: 0.086169  (how much positions have diverged)
+  alpha_bar at t=T//2, min/max: 0.00393 / 0.43413
+  Saved .npy snapshots to: C:\Users\vishw\Desktop\Diffusion Models\Generation\Models\tgm-dlm_merged\tests\_tmp_save_dir/
+  Loss history reset for next window.
+============================================================
+
+  Refit #4 (step 2000):
+    Mean std at t=0:           1.21001295745372772e-01
+    std.std() across positions:1.49303502894326812e-08
+    Max pos diff from init:    0.00000000000000000e+00
+
+============================================================
+[AdaptiveNoise | step 2500] *** REFITTING SCHEDULE ***
+  Raw loss_dist: mean=0.00318, min=0.00005, max=0.00997
+  Monotonicity violations corrected: 6393
+  New schedule: shape=(2000, 256), range=[0.00000, 0.98536]
+  Max alpha_bar change from previous schedule: 0.419163
+  Mean alpha_bar change from previous schedule: 0.032643
+  alpha_bar at t=T//2, std across positions: 0.095779  (how much positions have diverged)
+  alpha_bar at t=T//2, min/max: 0.01516 / 0.43413
+  Saved .npy snapshots to: C:\Users\vishw\Desktop\Diffusion Models\Generation\Models\tgm-dlm_merged\tests\_tmp_save_dir/
+  Loss history reset for next window.
+============================================================
+
+  Refit #5 (step 2500):
+    Mean std at t=0:           1.21001295745372772e-01
+    std.std() across positions:1.49303502894326812e-08
+    Max pos diff from init:    0.00000000000000000e+00
+
+  -> STATUS: PASS (std.std() across positions remains stably <= 1e-8 << 1e-3 across all refits)
+
+================================================================================
+RUNNING: §7.2 Three-Way Parity Ablation Test (test_three_way_parity.py)
+================================================================================
+================================================================================
+[Ablation (a)] Vanilla TGM-DLM Parity Test (Merged defaults vs Upstream base)
+================================================================================
+  [Schedule & q_sample]
+    Raw max abs diff (alphas_cumprod):           0.00000000000000000e+00
+    Raw max abs diff (q_sample output):          0.00000000000000000e+00
+  [training_losses_e2e on Parameterized Model]
+    Raw max abs diff (training_losses_e2e @ t=0):  0.00000000000000000e+00
+    Raw max abs diff (training_losses_e2e @ t_mid):0.00000000000000000e+00
+  -> STATUS: PASS (Exact 0.0 bitwise match across all tensors)
+
+================================================================================
+[Ablation (b)] Solo Adaptive Noising (AN-only) Parity Test
+================================================================================
+  [2-D Schedule & q_sample]
+    2-D Schedule shape:                          (2000, 256)
+    Raw max abs diff (2-D alphas):               0.00000000000000000e+00
+    Raw max abs diff (2-D q_sample):             0.00000000000000000e+00
+  [training_losses_e2e on Parameterized Model]
+    Raw max abs diff (training_losses_e2e @ t=0):  0.00000000000000000e+00
+    Raw max abs diff (training_losses_e2e @ t_mid):0.00000000000000000e+00
+    Raw max abs diff (Loss history accumulation):0.00000000000000000e+00
+  -> STATUS: PASS (Exact 0.0 bitwise match across all tensors & accumulators)
+
+================================================================================
+[Ablation (c)] Solo Mixed-Space (MS-only) Parity Test
+================================================================================
+  [Mixed Space q_sample]
+    Raw max abs diff (continuous mean-centered): 0.00000000000000000e+00
+    Raw max abs diff (discrete substitution):    0.00000000000000000e+00
+  [training_losses_e2e on Parameterized Model (with reg_rate & absorption)]
+    Raw max abs diff (training_losses_e2e @ t=0):  0.00000000000000000e+00
+    Raw max abs diff (training_losses_e2e @ t_mid):0.00000000000000000e+00
+  -> STATUS: PASS (Exact 0.0 bitwise match across all tensors)
+
+================================================================================
+*** ALL 3 PARITY ABLATIONS (SCHEDULE, Q_SAMPLE & TRAINING_LOSSES_E2E) PASSED WITH 0.0 DIFF! ***
+================================================================================
+
+================================================================================
+RUNNING: §7.1 / §7.3 4-Way Operational Modes Smoke Test (test_e2e_configurations.py)
+================================================================================
+IN SMI_ORI
+0807checkpoint in Diffusion LM REGEX AUG!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+================================================================================
+SMOKE TEST: Control Flow, Dynamic Shapes, and Finite Loss Sanity Check
+NOTE: This is a single-repo smoke test. For cross-repo parity, see test_three_way_parity.py.
+================================================================================
+
+Operational Mode: Vanilla (Baseline Defaults)
+training mode is  e2e
+training mode is  e2e
+Recieving max t:0
+Recieving max t:1500
+  t=0:   total_loss=5.72680521011352539e+00, mse=1.06780230998992920e+00
+  t_mid: total_loss=2.70988554687500000e+04, mse=2.70941933593750000e+04
+  -> SMOKE CHECK: PASS
+
+Operational Mode: Adaptive Noise Solo
+training mode is  e2e
+training mode is  e2e
+
+============================================================
+[AdaptiveNoise] INITIALISED
+  T (diffusion steps):   2000
+  S (token_max_length):  256
+  Loss buckets (T//g):   40  (granularity=50)
+  Schedule refit every:  500 steps
+  Warmup (2x stride):    1000 steps
+  Save dir:              C:\Users\vishw\Desktop\Diffusion Models\Generation\Models\tgm-dlm_merged\tests\_tmp_save_dir
+============================================================
+
+[AdaptiveNoise] _expand_schedule_to_2d: all arrays now shape (2000, 256)
+Recieving max t:0
+Recieving max t:1500
+  t=0:   total_loss=5.72680521011352539e+00, mse=1.06780230998992920e+00
+  t_mid: total_loss=2.70988554687500000e+04, mse=2.70941933593750000e+04
+  -> SMOKE CHECK: PASS
+
+Operational Mode: Mixed Space Solo
+training mode is  e2e
+training mode is  e2e
+Recieving max t:0
+Recieving max t:1500
+  t=0:   total_loss=5.79977512359619141e+00, mse=1.07683277130126953e+00
+  t_mid: total_loss=2.71097617187500000e+04, mse=2.71050390625000000e+04
+  -> SMOKE CHECK: PASS
+
+Operational Mode: Joint AN + MS (Unified)
+training mode is  e2e
+training mode is  e2e
+
+============================================================
+[AdaptiveNoise] INITIALISED
+  T (diffusion steps):   2000
+  S (token_max_length):  256
+  Loss buckets (T//g):   40  (granularity=50)
+  Schedule refit every:  500 steps
+  Warmup (2x stride):    1000 steps
+  Save dir:              C:\Users\vishw\Desktop\Diffusion Models\Generation\Models\tgm-dlm_merged\tests\_tmp_save_dir
+============================================================
+
+[AdaptiveNoise] _expand_schedule_to_2d: all arrays now shape (2000, 256)
+Recieving max t:0
+Recieving max t:1500
+  t=0:   total_loss=5.79977512359619141e+00, mse=1.07683277130126953e+00
+  t_mid: total_loss=2.71097617187500000e+04, mse=2.71050390625000000e+04
+  -> SMOKE CHECK: PASS
+
+================================================================================
+RUNNING: Diagnostic Logging Spec (LOGGING_SPEC.md) Test (test_logging_spec.py)
+================================================================================
+IN SMI_ORI
+0807checkpoint in Diffusion LM REGEX AUG!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+================================================================================
+TEST: LOGGING_SPEC.md Diagnostic Logging Implementation
+================================================================================
+
+1. Testing Section 0: Always-on Non-Finite Loss Alert (#ALERT#)...
+training mode is  e2e
+training mode is  e2e
+
+============================================================
+[AdaptiveNoise] INITIALISED
+  T (diffusion steps):   2000
+  S (token_max_length):  256
+  Loss buckets (T//g):   40  (granularity=50)
+  Schedule refit every:  500 steps
+  Warmup (2x stride):    1000 steps
+  Save dir:              C:\Users\vishw\Desktop\Diffusion Models\Generation\Models\tgm-dlm_merged\tests\_tmp_logging_test_dir
+============================================================
+
+[AdaptiveNoise] _expand_schedule_to_2d: all arrays now shape (2000, 256)
+
+2. Testing Section 1: #METRICS# JSON Payload Assembly (every 20 steps)...
+Captured stdout during step 20:
+#METRICS# {"step": 20, "loss": 54420.117188, "mse": 54415.265625, "decoder_nll": 4.798478, "tT_loss": 0.0, "an": {"mean_mse_global": 54415.265625, "schedule_std_mid": 0.0, "schedule_range_mid": [0.295423, 0.295423], "bucket_fill_min": 1.0, "monotone_violations_frac": null, "schedule_max_change": null, "top5_hard_positions": [118, 136, 56, 72, 153]}, "ms": {"mean_embed_norm": 5.387329, "reg_term_value": 0.053873, "reg_term_frac": 1e-06, "embed_dist_to_tokens": 7.846517, "mask_rate_mean": 0.142424, "mask_rate_by_t_bucket": [0.1075, 0.1657, 0.1891]}, "joint": {"mask_rate_std_at_midT": 0.0, "mask_rate_loss_corr": 0.0}}
+  -> Section A (General Health): PASS
+  -> Section B (Adaptive Noising): PASS
+  -> Section C (Mixed-Space): PASS
+  -> Section D (Joint Interaction): PASS
+  -> JSONL Logging to metrics_log.jsonl: PASS
+
+*** LOGGING SPEC IMPLEMENTATION TEST PASSED! ***
+
+
+================================================================================
+OVERALL VALIDATION RESULT: ALL TESTS PASSED
+================================================================================
