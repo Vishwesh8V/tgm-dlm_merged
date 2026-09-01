@@ -1691,6 +1691,94 @@ class GaussianDiffusion:
                 yield out
                 img = out["sample"]
 
+    def dpm_solver_sample_loop(
+        self,
+        model,
+        shape,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        model_kwargs=None,
+        device=None,
+        progress=False,
+        desc=None,
+        steps=10,
+        order=2,
+        method="multistep",
+        skip_type="time_uniform",
+        lower_order_final=True,
+    ):
+        """
+        Generate samples using DPM-Solver++ (Lu et al., 2022), a high-order
+        ODE solver for the diffusion reverse process. Typically needs far
+        fewer model evaluations than `p_sample_loop` (ancestral) or
+        `ddim_sample_loop` for comparable quality — 10-20 steps is a common
+        starting point vs. hundreds for DDIM.
+
+        Deterministic (an ODE solver, not an SDE sampler): unlike `p_sample`,
+        there is no `top_p`/noise-truncation knob here.
+
+        Built directly on `self.alphas_cumprod` (the *base*, un-respaced
+        schedule) rather than on `SpacedDiffusion`'s uniform-stride
+        subsampling: DPM-Solver++'s speed advantage comes from choosing its
+        own log-SNR-aware step locations, so `steps` here plays the role
+        `timestep_respacing` plays for `p_sample_loop`/`ddim_sample_loop`,
+        and should be called on a plain `GaussianDiffusion`, not through a
+        `SpacedDiffusion` wrapper that has already subsampled the schedule.
+
+        :param shape: the shape of the samples, (N, seqlen, channels).
+        :param steps: number of model evaluations (NFE). 10-20 is typically
+            enough for DPM-Solver++ to match hundreds of DDIM/ancestral steps.
+        :param order: solver order (1, 2, or 3). 2 is the standard default
+            (DPM-Solver++(2M)); higher orders need `steps` to be a multiple
+            of `order` to be used fully.
+        :param method: 'multistep' (recommended default, cheapest per-step)
+            or 'singlestep'/'singlestep_fixed'/'adaptive' (see `DPM_Solver.sample`
+            in dpm_solver.py for the full trade-off discussion).
+        :param desc: a `(desc_state, desc_mask)` text-conditioning tuple, same
+            as `p_sample_loop`/`ddim_sample_loop`.
+        :return: a non-differentiable batch of samples, same contract as
+            `p_sample_loop`/`ddim_sample_loop`.
+        """
+        from .dpm_solver import NoiseScheduleVP, DPM_Solver, tgmdlm_model_wrapper
+
+        if device is None:
+            device = next(model.parameters()).device
+        assert isinstance(shape, (tuple, list))
+        assert desc is not None, "dpm_solver_sample_loop requires `desc` (desc_state, desc_mask) text conditioning"
+
+        if noise is not None:
+            img = noise.to(device)
+        else:
+            img = th.randn(*shape, device=device)
+            if getattr(model, 'mean_embed', None) is not None:
+                img = img + model.mean_embed[None, None].to(device)
+
+        desc = (desc[0].to(device), desc[1].to(device))
+        if progress:
+            print('Text Guiding Generation (DPM-Solver++) ......')
+
+        noise_schedule = NoiseScheduleVP(
+            schedule='discrete',
+            alphas_cumprod=th.tensor(self.alphas_cumprod, dtype=th.float32, device=device),
+        )
+        model_fn = tgmdlm_model_wrapper(
+            self, model, noise_schedule, desc,
+            clip_denoised=clip_denoised, denoised_fn=denoised_fn, model_kwargs=model_kwargs,
+        )
+        dpm_solver = DPM_Solver(model_fn, noise_schedule, algorithm_type="dpmsolver++")
+
+        with th.no_grad():
+            sample = dpm_solver.sample(
+                img,
+                steps=steps,
+                order=order,
+                method=method,
+                skip_type=skip_type,
+                lower_order_final=lower_order_final,
+            )
+        return sample
+
     def _vb_terms_bpd(
         self, model, x_start, x_t, t, clip_denoised=True, model_kwargs=None,
             noise=None, denoised_fn=None,

@@ -8,11 +8,15 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-i","--input",required=True)
+parser.add_argument("--dataset_dir",default='../../datasets/SMILES/',
+                    help="Directory containing {split}.txt, in the same layout as datasets/SMILES/. "
+                    "Point this at a different dataset (e.g. ../../datasets/RETRO/) to precompute "
+                    "SciBERT states for that dataset's condition column instead of ChEBI descriptions.")
 args = parser.parse_args()
 split = args.input
-smtokenizer = regexTokenizer()
+smtokenizer = regexTokenizer(path=args.dataset_dir.rstrip('/') + '/generate_vocab.txt')
 train_dataset = ChEBIdataset(
-        dir='../../datasets/SMILES/',
+        dir=args.dataset_dir,
         smi_tokenizer=smtokenizer,
         split=split,
         replace_desc=False,
@@ -45,4 +49,4 @@ with torch.no_grad():
 
 
 
-torch.save(volume,'../../datasets/SMILES/'+split+'_desc_states.pt')
+torch.save(volume,args.dataset_dir.rstrip('/') + '/' + split+'_desc_states.pt')

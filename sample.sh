@@ -20,19 +20,28 @@ export OMPI_MCA_btl="^openib"
 # ==============================================================================
 CUDA_DEVICE="0"
 
-MODEL_PATH="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints/PLAIN_ema_0.9999_130000.pt"
+MODEL_PATH="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints/PLAIN_ema_0.9999_200000.pt"
 
 # Set path to .npy schedule file, or set to "none" for standard uniform schedule
-ADAPTIVE_SCHEDULE="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints/adaptive_schedule/alpha_cumprod_step_120000.npy"
+ADAPTIVE_SCHEDULE="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints/adaptive_schedule/alpha_cumprod_step_190000.npy"
 
-OUTPUT_FILE="../../generation_outputs/sampled_smiles_130k_fullsamp_3008.txt"
+OUTPUT_FILE="../../generation_outputs/sampled_smiles_200k_3108.txt"
 
 NUM_SAMPLES=3300
 BATCH_SIZE=64
 TIMESTEP_RESPACING=1
 
 # Random Seeds: single seed "121" or multiple seeds "101,102,103"
-SEEDS="121"
+SEEDS="108,112,126,135,201"
+
+# --- DPM-Solver++ (fast ODE sampler) ---
+# When enabled, overrides the p_sample_loop/ddim sampler above; TIMESTEP_RESPACING
+# is not used for this path (it works on the full 2000-step noise schedule and
+# picks its own steps). Typically 10-20 steps is enough.
+USE_DPM_SOLVER=False
+DPM_SOLVER_STEPS=2000
+DPM_SOLVER_ORDER=2
+DPM_SOLVER_METHOD="multistep"
 
 # --- Mixed-Space diffusion ---
 LEARNED_MEAN_EMBED=True
@@ -132,6 +141,10 @@ for s in "${SEED_ARRAY[@]}"; do
       --timestep_respacing "${TIMESTEP_RESPACING}" \
       --use_ddim false \
       --clip_denoised false \
+      --use_dpm_solver "${USE_DPM_SOLVER}" \
+      --dpm_solver_steps "${DPM_SOLVER_STEPS}" \
+      --dpm_solver_order "${DPM_SOLVER_ORDER}" \
+      --dpm_solver_method "${DPM_SOLVER_METHOD}" \
       "$@"
 done
 

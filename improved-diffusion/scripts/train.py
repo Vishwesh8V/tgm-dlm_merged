@@ -44,7 +44,9 @@ def main_worker(rank,world_size):
 
     dist_util.setup_dist(rank,world_size) 
     print("creating model and diffusion...")
-    smtokenizer = regexTokenizer(max_len=args.token_max_length)
+    data_dir = args.data_dir if args.data_dir else '../../datasets/SMILES/'
+    vocab_path = os.path.join(data_dir, 'generate_vocab.txt')
+    smtokenizer = regexTokenizer(path=vocab_path, max_len=args.token_max_length)
     model = TransformerNetModel2(
         in_channels=args.model_in_channels,  # 3, DEBUG**
         # deep_channels = 10,
@@ -102,9 +104,9 @@ def main_worker(rank,world_size):
     print('load data', '*'*50)
     
     train_dataset = ChEBIdataset(
-        dir='../../datasets/SMILES/',
+        dir=data_dir,
         smi_tokenizer=smtokenizer,
-        split='train_val_256',
+        split=args.train_split,
         replace_desc=False,
         corrupt_prob=0.,
         mask_desc=False
@@ -150,7 +152,8 @@ def create_argparser():
         commonGen_train='diffusion_lm/common-gen/commongen_data', 
         config='ll', 
         config_name='bert-base-uncased', 
-        data_dir='', 
+        data_dir='../../datasets/SMILES/',
+        train_split='train_val_256',
         dataset_config_name='wikitext-2-raw-v1', 
         dataset_name='wikitext', 
         diffusion_steps=2000, 

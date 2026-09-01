@@ -13,12 +13,12 @@ CUDA_DEVICE="0"
 
 # --- Resume paths ---
 # Set RESUME_CHECKPOINT to the model .pt file to resume from, or "" to train from scratch.
-RESUME_CHECKPOINT=""
+RESUME_CHECKPOINT="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints/PLAIN_model130000.pt"
 # RESUME_CHECKPOINT="/home/ee/phd/eez248435/tgm-dlm_adanoise1/checkpoints/PLAIN_model130000.pt"
 
 # Set ADAPTIVE_SCHEDULE to the corresponding alpha_cumprod_step_N.npy file, or "" to start fresh.
 # Companion loss_history_step_N.npy / loss_count_step_N.npy in the same folder are auto-loaded.
-ADAPTIVE_SCHEDULE=""
+ADAPTIVE_SCHEDULE="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints/adaptive_schedule/alpha_cumprod_step_130000.npy"
 # ADAPTIVE_SCHEDULE="/home/ee/phd/eez248435/tgm-dlm_adanoise1/checkpoints/adaptive_schedule/alpha_cumprod_step_130000.npy"
 
 # Number of steps to linearly warm up the LR after a resume.
@@ -26,7 +26,7 @@ ADAPTIVE_SCHEDULE=""
 # on resume. This ramps LR from 10% → 100% of the correct annealed value over
 # this many steps, re-stabilising Adam before returning to normal decay.
 # Set to 0 to disable. Has no effect on fresh-start runs.
-RESUME_WARMUP_STEPS=0
+RESUME_WARMUP_STEPS=500
 
 # --- Training hyperparameters ---
 BATCH_SIZE=64

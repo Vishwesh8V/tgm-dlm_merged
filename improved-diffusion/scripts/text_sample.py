@@ -105,6 +105,26 @@ def main():
         logger.log(f"Loading adaptive schedule from {args.adaptive_schedule_path}...")
         diffusion.load_adaptive_schedule(args.adaptive_schedule_path)
 
+    # DPM-Solver++ picks its own log-SNR-spaced steps from the *full* noise
+    # schedule, so it should not ride on top of `diffusion`'s uniform-stride
+    # SpacedDiffusion subsampling (`--timestep_respacing`). Build a plain,
+    # un-respaced GaussianDiffusion for it instead; `--dpm_solver_steps` plays
+    # the role `--timestep_respacing` plays for the other two samplers.
+    dpm_solver_diffusion = None
+    if getattr(args, 'use_dpm_solver', False):
+        dpm_solver_diffusion = gd.GaussianDiffusion(
+            betas=gd.get_named_beta_schedule('sqrt', 2000),
+            model_mean_type=gd.ModelMeanType.START_X,
+            model_var_type=gd.ModelVarType.FIXED_LARGE,
+            loss_type=gd.LossType.E2E_MSE,
+            rescale_timesteps=True,
+            model_arch='transformer',
+            training_mode='e2e',
+            reg_rate=getattr(args, 'reg_rate', 0.0),
+            denoise=getattr(args, 'denoise', False),
+            denoise_rate=getattr(args, 'denoise_rate', 0.2),
+        )
+
     print(args.model_path)
     model.load_state_dict(
         dist_util.load_state_dict(args.model_path, map_location="cpu")
@@ -157,22 +177,37 @@ def main():
         desc_mask = th.concat([i[1] for i in desc[num_done:idend]],dim=0)
         
         model_kwargs = {}
-        print('use_ddim:{}',args.use_ddim)
-        sample_fn = (
-            diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
-        )
         sample_shape = (idend-num_done, tokenizer.max_len, model.in_channels)
         print(sample_shape)
-        sample = sample_fn(
-            model,
-            sample_shape,
-            clip_denoised=args.clip_denoised,
-            denoised_fn = None,
-            model_kwargs=model_kwargs,
-            top_p =args.top_p,
-            progress = True,
-            desc = (desc_state,desc_mask)
-        )
+        if getattr(args, 'use_dpm_solver', False):
+            print(f'sampling with DPM-Solver++ (steps={args.dpm_solver_steps}, order={args.dpm_solver_order})')
+            sample = dpm_solver_diffusion.dpm_solver_sample_loop(
+                model,
+                sample_shape,
+                clip_denoised=args.clip_denoised,
+                denoised_fn=None,
+                model_kwargs=model_kwargs,
+                progress=True,
+                desc=(desc_state, desc_mask),
+                steps=args.dpm_solver_steps,
+                order=args.dpm_solver_order,
+                method=args.dpm_solver_method,
+            )
+        else:
+            print('use_ddim:{}',args.use_ddim)
+            sample_fn = (
+                diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
+            )
+            sample = sample_fn(
+                model,
+                sample_shape,
+                clip_denoised=args.clip_denoised,
+                denoised_fn = None,
+                model_kwargs=model_kwargs,
+                top_p =args.top_p,
+                progress = True,
+                desc = (desc_state,desc_mask)
+            )
         allsample.append(sample)
         num_done = idend
     sample = th.concat(allsample,dim=0)
@@ -242,6 +277,10 @@ def create_argparser():
                          start_idx=0,
                          end_idx=-1,
                          token_max_length=256,
+                         use_dpm_solver=False,
+                         dpm_solver_steps=10,
+                         dpm_solver_order=2,
+                         dpm_solver_method='multistep',
                          )
     defaults.update(model_and_diffusion_defaults())
     defaults.update(text_defaults)
