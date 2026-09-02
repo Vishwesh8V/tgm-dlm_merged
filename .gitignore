@@ -5,6 +5,7 @@ checkpoints_newer/*
 checkpoints_old/*
 ckpts_backup/*
 checkpoints_retro/*
+checkpoints_forward/*
 scibert/*
 __pycache__/*
 *.pyc
@@ -12,6 +13,8 @@ train_val_256_desc_states.pt
 test_desc_states.pt
 generation_outputs/*
 improved-diffusion/scripts/wandb/*
+
+datasets/FORWARD/*
 
 # Python
 __pycache__/

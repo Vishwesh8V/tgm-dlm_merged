@@ -136,7 +136,7 @@ def print_single_results(metrics, title="Evaluation Results"):
 if __name__ == '__main__':
     import sys, os, glob, re
 
-    filepath = sys.argv[1] if len(sys.argv) > 1 else 'generation_outputs/sampled_smiles_120k.txt'
+    filepath = sys.argv[1] if len(sys.argv) > 1 else '/home/ee/phd/eez248435/tgm-dlm_merged/generation_outputs/sampled_smiles_200k_3108_seed108.txt'
     
     dir_name = os.path.dirname(filepath) or '.'
     base_name = os.path.basename(filepath)
