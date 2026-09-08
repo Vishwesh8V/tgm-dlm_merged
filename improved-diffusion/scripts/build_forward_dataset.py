@@ -158,8 +158,8 @@ def load_molinstructions(path):
         out.append(
             (
                 split,
-                reactant_smiles,
-                product_smiles
+                product_smiles,
+                reactant_smiles
             )
         )
 

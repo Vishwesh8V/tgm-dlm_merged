@@ -1468,3 +1468,194 @@ def tgmdlm_model_wrapper(diffusion, model, noise_schedule, desc, clip_denoised=F
         return eps
 
     return model_fn
+
+
+# ============================================================================
+# Token-wise adaptive step schedule (per-position reduced-step inference)
+# ============================================================================
+#
+# Ported from a sibling DiffuSeq-derived codebase built for a molecule ->
+# caption task, and adapted here for TGM-DLM's caption -> molecule direction.
+#
+# The source codebase concatenates `[source | target]` into one sequence and
+# only ever denoises the target half, anchoring the source half back to its
+# clean embedding at every solver step (see its `TokenAdaptiveDPMSolver.sample`
+# `anchor()` helper and `input_ids_mask`/`x_start` arguments). TGM-DLM has no
+# such split: the caption is external cross-attention conditioning
+# (`desc_state`/`desc_mask`), and every position of the generated SMILES
+# sequence is denoised, so there is nothing to anchor. `sample()` below is
+# the same anchor-free simplification for that reason -- it is not a partial
+# port, the anchoring machinery genuinely does not apply here.
+def load_step_matrix(path, K, seq_len):
+    """
+    Load a per-position reduced-step schedule J as a [K, L] int array from
+    either a `.npy` file or a "position,call_0,...,call_{K-1}" CSV (the format
+    written by `scripts/trajectory_analysis.py`'s `allocate_schedule` step).
+    """
+    import numpy as np
+    import os
+
+    if path.lower().endswith(".csv"):
+        arr = np.loadtxt(path, delimiter=",", skiprows=1, dtype=np.int64)
+        if arr.ndim != 2 or arr.shape[1] != K + 1:
+            raise ValueError(
+                f"CSV must have columns: position + {K} calls; got shape {arr.shape}."
+            )
+        positions = arr[:, 0]
+        if arr.shape[0] != seq_len or not np.array_equal(positions, np.arange(seq_len)):
+            raise ValueError(
+                f"CSV position column must contain 0...{seq_len - 1} exactly once in order."
+            )
+        J = arr[:, 1:].T
+    else:
+        J = np.load(path).astype(np.int64)
+
+    expected = (K, seq_len)
+    if J.shape != expected:
+        raise ValueError(f"Expected step matrix shape {expected}, got {J.shape}.")
+    return J.astype(np.int64, copy=False)
+
+
+def preview_dpm_solver_steps(dpm_solver, steps, skip_type="time_uniform", t_T=1.0, t_0=None):
+    """
+    Best-effort preview of the discrete diffusion timesteps
+    `DPM_Solver.sample(method='multistep', ...)` will actually visit, purely
+    for logging -- computed from the exact same `get_time_steps` call
+    `.sample()` uses internally, so it is exact for the default
+    `method='multistep'`. It is only a preview of the underlying time grid
+    for `method='singlestep'`/`'singlestep_fixed'`, since those combine
+    multiple orders per step in a way this does not replicate.
+
+    Returns a plain Python list of ints in [0, total_N - 1], ordered
+    noisiest -> cleanest (matching `_print_step_schedule`'s convention).
+    """
+    import torch
+
+    noise_schedule = dpm_solver.noise_schedule
+    if t_0 is None:
+        t_0 = 1.0 / noise_schedule.total_N
+    device = getattr(noise_schedule, "t_array", torch.tensor(0.0)).device
+    t = dpm_solver.get_time_steps(skip_type, t_T, t_0, steps, device)
+    idx = torch.round(t * noise_schedule.total_N).long() - 1
+    idx = idx.clamp(0, noise_schedule.total_N - 1)
+    return [int(i) for i in idx.tolist()]
+
+
+
+    """
+    Second-order multistep DPM-Solver++ on a token-wise discrete schedule
+    J[K, L]: column `l` of J lists the K diffusion timesteps (strictly
+    decreasing, from `num_timesteps - 1` down to `0`) that position `l`
+    actually visits, so "easy" positions can spend their K calls compressed
+    near the clean end while "hard" positions spread theirs across the full
+    noise range.
+
+    The denoising network still receives one scalar timestep per forward
+    pass (that is how it was trained). `model_fn(x, t_ids)` is expected to
+    collapse the per-position `t_ids` [L] to that single scalar internally
+    (e.g. the median over positions where the schedule is genuinely
+    adaptive) and return a per-position `pred_xstart` [B, L, D] -- only the
+    *solver coefficients* below actually use the full per-position `t_ids`.
+    """
+
+    def __init__(self, model_fn, alphas_cumprod_2d, correcting_x0_fn=None):
+        self.model_fn = model_fn
+        self.alpha_bar = alphas_cumprod_2d  # [T, L]
+        self.correcting_x0_fn = correcting_x0_fn
+
+    def _coeff(self, t_ids):
+        # t_ids: [L], alpha_bar: [T, L]
+        L = t_ids.numel()
+        pos = torch.arange(L, device=t_ids.device)
+        abar = self.alpha_bar[t_ids, pos].clamp(1e-12, 1.0 - 1e-12)
+        alpha = torch.sqrt(abar)
+        sigma = torch.sqrt(1.0 - abar)
+        lam = 0.5 * torch.log(abar / (1.0 - abar))
+        return alpha, sigma, lam
+
+    @staticmethod
+    def _bc(v):
+        return v[None, :, None]
+
+    def _predict_x0(self, x, t_ids):
+        pred = self.model_fn(x, t_ids)
+        if self.correcting_x0_fn is not None:
+            pred = self.correcting_x0_fn(pred)
+        return pred
+
+    def _first_update(self, x, t_s, t_t, model_s):
+        alpha_s, sigma_s, lam_s = self._coeff(t_s)
+        alpha_t, sigma_t, lam_t = self._coeff(t_t)
+        h = lam_t - lam_s
+        phi_1 = torch.expm1(-h)
+        return (
+            self._bc(sigma_t / sigma_s) * x
+            - self._bc(alpha_t * phi_1) * model_s
+        )
+
+    def _second_update(self, x, m_prev, m_cur, t_prev, t_cur, t_next):
+        _, _, lam_prev = self._coeff(t_prev)
+        _, sigma_cur, lam_cur = self._coeff(t_cur)
+        alpha_next, sigma_next, lam_next = self._coeff(t_next)
+
+        h0 = lam_cur - lam_prev
+        h = lam_next - lam_cur
+
+        # Strictly decreasing J should make both non-zero. Keep a tiny floor
+        # only to protect against numerically flat learned alpha schedules.
+        eps = 1e-7
+        h_safe = torch.where(h.abs() < eps, torch.sign(h) * eps + (h == 0) * eps, h)
+        h0_safe = torch.where(h0.abs() < eps, torch.sign(h0) * eps + (h0 == 0) * eps, h0)
+
+        r0 = h0_safe / h_safe
+        D1 = self._bc(1.0 / r0) * (m_cur - m_prev)
+        phi_1 = torch.expm1(-h_safe)
+
+        return (
+            self._bc(sigma_next / sigma_cur) * x
+            - self._bc(alpha_next * phi_1) * m_cur
+            - 0.5 * self._bc(alpha_next * phi_1) * D1
+        )
+
+    def sample(self, x, J, callback=None):
+        """
+        J has K rows. We make exactly K denoiser evaluations: row 0
+        prediction, K-1 token-wise transitions, then a prediction at every
+        arrival including the final row. J[-1] must be all zeros (t=0); the
+        final prediction there is returned as the clean sample.
+        """
+        if J.ndim != 2:
+            raise ValueError(f"J must be [K, L], got {tuple(J.shape)}.")
+        K, L = J.shape
+        if K < 3:
+            raise ValueError("TokenAdaptiveDPMSolver requires K >= 3.")
+        if x.shape[1] != L:
+            raise ValueError(f"J has L={L}, but sample has L={x.shape[1]}.")
+
+        # Model call 1 at J[0].
+        t_prev = J[0]
+        m_prev = self._predict_x0(x, t_prev)
+        if callback is not None:
+            callback(x, m_prev)
+
+        # First-order transition J[0] -> J[1], then model call 2.
+        t_cur = J[1]
+        x = self._first_update(x, t_prev, t_cur, m_prev)
+        m_cur = self._predict_x0(x, t_cur)
+        if callback is not None:
+            callback(x, m_cur)
+
+        # Second-order multistep transitions. Each arrival gets one model
+        # call, including the final row, so K rows == K denoiser evaluations.
+        for r in range(2, K):
+            t_next = J[r]
+            x = self._second_update(x, m_prev, m_cur, t_prev, t_cur, t_next)
+
+            t_prev, t_cur = t_cur, t_next
+            m_prev, m_cur = m_cur, self._predict_x0(x, t_cur)
+
+            if callback is not None:
+                callback(x, m_cur)
+
+        # J[-1] is t=0. Return the final clean prediction.
+        return m_cur

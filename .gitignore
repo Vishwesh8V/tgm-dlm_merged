@@ -15,7 +15,8 @@ generation_outputs/*
 improved-diffusion/scripts/wandb/*
 
 datasets/FORWARD/*
-
+/home/ee/phd/eez248435/tgm-dlm_merged/improved-diffusion/scripts/wandb/latest-run/*
+ scalability_outputs_1seed/*
 # Python
 __pycache__/
 *.pyc

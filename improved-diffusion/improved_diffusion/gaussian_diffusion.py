@@ -14,6 +14,35 @@ import torch as th
 from .nn import mean_flat
 from .losses import normal_kl, discretized_gaussian_log_likelihood, discretized_text_log_likelihood
 
+
+def _resolve_original_timesteps(diffusion, local_indices):
+    """
+    Map possibly-respaced local timestep indices back to original 0..T-1
+    diffusion timesteps for display purposes. `SpacedDiffusion` (respace.py)
+    keeps its own internal 0..num_timesteps-1 indexing and translates to the
+    real timestep via `timestep_map` only inside the wrapped model call --
+    the loop in p_sample_loop_progressive/ddim_sample_loop_progressive never
+    sees the real numbers, so this is needed purely for logging.
+    """
+    if hasattr(diffusion, 'timestep_map'):
+        tmap = diffusion.timestep_map
+        return [int(tmap[i]) for i in local_indices]
+    return [int(i) for i in local_indices]
+
+
+def _print_step_schedule(label, original_timesteps):
+    """
+    Print the exact sequence of original (0..T-1) diffusion timesteps a
+    sampler is about to visit, noisiest to cleanest -- e.g. for full 2000-step
+    ancestral sampling: [1999, 1998, ..., 1, 0]; for a 10-step solver:
+    [1999, 1899, ..., 0]. Purely diagnostic, does not affect sampling.
+    """
+    print(
+        f"[StepSchedule] {label}: {len(original_timesteps)} model calls -- "
+        f"steps visited (noisiest -> cleanest): {original_timesteps}"
+    )
+
+
 print("0807checkpoint in Diffusion LM REGEX AUG!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
     """
@@ -1316,6 +1345,9 @@ class GaussianDiffusion:
             if getattr(model, 'mean_embed', None) is not None:
                 img = img + model.mean_embed[None, None].to(device)
         indices = list(range(self.num_timesteps))[::-1]
+        _print_step_schedule(
+            "Ancestral (p_sample_loop)", _resolve_original_timesteps(self, indices)
+        )
         if progress:
             from tqdm.auto import tqdm
             indices = tqdm(indices)
@@ -1667,6 +1699,9 @@ class GaussianDiffusion:
         else:
             img = th.randn(*shape, device=device)
         indices = list(range(self.num_timesteps))[::-1]
+        _print_step_schedule(
+            "DDIM (ddim_sample_loop)", _resolve_original_timesteps(self, indices)
+        )
         if desc is not None:
             print('Text Guiding Generation ......')
             desc = (desc[0].to(img.device),desc[1].to(img.device))
@@ -1768,6 +1803,22 @@ class GaussianDiffusion:
         )
         dpm_solver = DPM_Solver(model_fn, noise_schedule, algorithm_type="dpmsolver++")
 
+        try:
+            from .dpm_solver import preview_dpm_solver_steps
+            preview_steps = preview_dpm_solver_steps(dpm_solver, steps, skip_type=skip_type)
+            note = "" if method == "multistep" else (
+                f" (preview shows the underlying time grid; method='{method}' "
+                "combines multiple orders per call, so the true per-call "
+                "schedule may differ slightly)"
+            )
+            _print_step_schedule(
+                f"DPM-Solver++ (steps={steps}, order={order}, method={method}, "
+                f"skip_type={skip_type}){note}",
+                preview_steps,
+            )
+        except Exception as e:
+            print(f"[StepSchedule] DPM-Solver++ step preview unavailable: {e}")
+
         with th.no_grad():
             sample = dpm_solver.sample(
                 img,
@@ -1777,6 +1828,203 @@ class GaussianDiffusion:
                 skip_type=skip_type,
                 lower_order_final=lower_order_final,
             )
+        return sample
+
+    def token_adaptive_dpm_solver_sample_loop(
+        self,
+        model,
+        shape,
+        step_matrix,
+        noise=None,
+        clip_denoised=True,
+        denoised_fn=None,
+        model_kwargs=None,
+        device=None,
+        progress=False,
+        desc=None,
+        callback=None,
+    ):
+        """
+        Generate samples using a token-wise (per sequence-position) reduced
+        step schedule instead of one shared step grid: `step_matrix` (`J`)
+        has shape `[K, L]`, and column `l` lists the `K` diffusion timesteps
+        position `l` visits, strictly decreasing from `num_timesteps - 1`
+        (fully noised) to `0` (clean). Positions that are structurally easy
+        for the model can be given a schedule that spends its `K` calls
+        compressed near the clean end; positions that are hard can spread
+        theirs across the full noise range -- all for the same total number
+        of denoiser evaluations `K` as `dpm_solver_sample_loop(steps=K)`.
+
+        `step_matrix` is produced offline by profiling a checkpoint's
+        per-position, per-timestep validation loss and allocating steps
+        accordingly; see `scripts/reduced_step_profile.py` and
+        `scripts/trajectory_analysis.py`.
+
+        Unlike `dpm_solver_sample_loop`, this always uses second-order
+        multistep DPM-Solver++ (matching `TokenAdaptiveDPMSolver`) and has no
+        `steps`/`order`/`method`/`skip_type` knobs -- the schedule itself
+        *is* the step grid, there is nothing left to derive automatically.
+
+        :param shape: the shape of the samples, (N, seqlen, channels).
+        :param step_matrix: a `[K, L]` int array/tensor (see above). `K` must
+            be >= 3 and `L` must equal `shape[1]`.
+        :param desc: a `(desc_state, desc_mask)` text-conditioning tuple,
+            same as `p_sample_loop`/`dpm_solver_sample_loop`.
+        :param callback: optional `callback(x_t, pred_xstart)` called once
+            per denoiser evaluation, e.g. to record a trajectory.
+        :return: a non-differentiable batch of samples, same contract as
+            `p_sample_loop`/`dpm_solver_sample_loop`.
+        """
+        from .dpm_solver import TokenAdaptiveDPMSolver
+
+        if device is None:
+            device = next(model.parameters()).device
+        assert isinstance(shape, (tuple, list))
+        assert desc is not None, (
+            "token_adaptive_dpm_solver_sample_loop requires `desc` "
+            "(desc_state, desc_mask) text conditioning"
+        )
+
+        B, L, C = shape
+
+        step_matrix = np.asarray(step_matrix, dtype=np.int64)
+        if step_matrix.ndim != 2 or step_matrix.shape[1] != L:
+            raise ValueError(
+                f"step_matrix must be [K, {L}], got {tuple(step_matrix.shape)}."
+            )
+        K = step_matrix.shape[0]
+        if K < 3:
+            raise ValueError(
+                "token_adaptive_dpm_solver_sample_loop requires K >= 3 rows "
+                "in step_matrix."
+            )
+        if not np.all(step_matrix[:-1] > step_matrix[1:]):
+            raise ValueError(
+                "Every column of step_matrix must be strictly decreasing "
+                "from noisy to clean."
+            )
+        if not np.all(step_matrix[0] == self.num_timesteps - 1):
+            raise ValueError(
+                f"First row of step_matrix must be {self.num_timesteps - 1}."
+            )
+        if not np.all(step_matrix[-1] == 0):
+            raise ValueError("Last row of step_matrix must be 0.")
+        if step_matrix.min() < 0 or step_matrix.max() >= self.num_timesteps:
+            raise ValueError(
+                "step_matrix contains timesteps outside the diffusion range."
+            )
+
+        if noise is not None:
+            img = noise.to(device)
+        else:
+            img = th.randn(*shape, device=device)
+            if getattr(model, 'mean_embed', None) is not None:
+                img = img + model.mean_embed[None, None].to(device)
+
+        desc_state, desc_mask = desc
+        desc_state, desc_mask = desc_state.to(device), desc_mask.to(device)
+        if model_kwargs is None:
+            model_kwargs = {}
+
+        if progress:
+            print('Text Guiding Generation (Token-Adaptive DPM-Solver++) ......')
+
+        # `self.alphas_cumprod` is 1-D `(T,)` unless a per-position adaptive
+        # noise schedule was trained/loaded (see `_expand_schedule_to_2d`),
+        # in which case it is already `(T, L)`. Either way the token-wise
+        # solver needs an explicit `(T, L)` table to index `[t_ids, position]`
+        # -- tile the shared 1-D schedule across positions if needed. This
+        # composes correctly with a genuinely per-position noise schedule:
+        # the *step matrix* choosing which t each position visits, and the
+        # *noise schedule* possibly differing per position at a given t, are
+        # independent axes.
+        alpha_bar_np = self.alphas_cumprod
+        if alpha_bar_np.ndim == 1:
+            alpha_bar_np = np.tile(alpha_bar_np[:, None], (1, L))
+        if alpha_bar_np.shape != (self.num_timesteps, L):
+            raise ValueError(
+                f"Expected alpha_bar shape {(self.num_timesteps, L)}, "
+                f"got {alpha_bar_np.shape}."
+            )
+        alpha_bar_2d = th.as_tensor(alpha_bar_np, device=device, dtype=th.float32)
+
+        # The network was trained with one scalar timestep per example, so
+        # every model call still uses a single representative t. Positions
+        # whose column of J matches the uniform K-step baseline contribute
+        # no adaptive information, so the representative t is taken as the
+        # median over only the positions that actually deviate from that
+        # baseline (falling back to all positions if none deviate).
+        uniform_ref = np.rint(
+            np.linspace(self.num_timesteps - 1, 0, K)
+        ).astype(np.int64)
+        adaptive_positions_np = np.flatnonzero(
+            np.any(step_matrix != uniform_ref[:, None], axis=0)
+        )
+        adaptive_positions = th.as_tensor(
+            adaptive_positions_np, device=device, dtype=th.long
+        )
+        _print_step_schedule(
+            f"Token-Adaptive DPM-Solver++ uniform baseline (K={K}, "
+            f"{adaptive_positions.numel()}/{L} positions actually adaptive)",
+            [int(s) for s in uniform_ref.tolist()],
+        )
+
+        visited_t = []
+
+        def token_model_fn(x, t_ids):
+            row = (
+                t_ids.index_select(0, adaptive_positions)
+                if adaptive_positions.numel() > 0
+                else t_ids
+            )
+            t_global = row.float().median().round().long()
+            t_global = t_global.clamp(0, self.num_timesteps - 1)
+            visited_t.append(int(t_global.item()))
+            t_batch = t_global.expand(x.shape[0])
+            t_input = self._scale_timesteps(t_batch)
+            model_output = model(
+                x, t_input, desc_state, desc_mask, **model_kwargs
+            )
+
+            if self.model_var_type.name in ("LEARNED", "LEARNED_RANGE"):
+                Cc = x.size(-1)
+                model_output, _ = th.split(model_output, Cc, dim=-1)
+
+            if self.model_mean_type.name == "START_X":
+                pred_xstart = model_output
+            elif self.model_mean_type.name == "EPSILON":
+                pred_xstart = self._predict_xstart_from_eps(
+                    x_t=x, t=t_batch, eps=model_output
+                )
+            else:
+                raise NotImplementedError(
+                    "token_adaptive_dpm_solver_sample_loop only supports "
+                    f"model_mean_type START_X or EPSILON, got {self.model_mean_type}"
+                )
+
+            if denoised_fn is not None:
+                pred_xstart = denoised_fn(pred_xstart)
+            if clip_denoised:
+                pred_xstart = pred_xstart.clamp(-1, 1)
+            return pred_xstart
+
+        solver = TokenAdaptiveDPMSolver(
+            model_fn=token_model_fn,
+            alphas_cumprod_2d=alpha_bar_2d,
+            correcting_x0_fn=None,
+        )
+
+        J_tensor = th.from_numpy(step_matrix).long().to(device)
+
+        with th.no_grad():
+            sample = solver.sample(img, J=J_tensor, callback=callback)
+
+        _print_step_schedule(
+            "Token-Adaptive DPM-Solver++ actual network calls (per-position "
+            "timesteps collapsed to their median at each call, since the "
+            "network still only sees one scalar t per forward pass)",
+            visited_t,
+        )
         return sample
 
     def _vb_terms_bpd(

@@ -25,9 +25,9 @@ CUDA_DEVICE="0"
 RAW_FORWARD_INPUT="/home/ee/phd/eez248435/tgm-dlm_merged/datasets/FORWARD/forward_reaction_prediction.json"
 RAW_FORWARD_FORMAT="molinstructions"
 
-RESUME_CHECKPOINT=""
-ADAPTIVE_SCHEDULE=""
-RESUME_WARMUP_STEPS=0
+RESUME_CHECKPOINT="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints_forward/PLAIN_ema_0.9999_140000.pt"
+ADAPTIVE_SCHEDULE="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints_forward/adaptive_schedule/alpha_cumprod_step_140000.npy"
+RESUME_WARMUP_STEPS=500
 
 BATCH_SIZE=64
 LR=0.00005

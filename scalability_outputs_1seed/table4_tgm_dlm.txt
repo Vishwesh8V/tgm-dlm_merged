@@ -1,9 +1,9 @@
-tgm-dlm Scalability Analysis
+tgm-dlm_merged Scalability Analysis
 Metric: MACCS Fingerprint Tanimoto Similarity
 
 Instruction Length (Word Count)
 Model	1-64	65-96	97-128	129-160	>160
-tgm-dlm	0.897	0.822	0.565	N/A	N/A
+ours	0.897	0.822	0.565	N/A	N/A
 
 --------------------------------------------------------------
 

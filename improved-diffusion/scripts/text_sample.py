@@ -59,7 +59,15 @@ def main():
     if args.experiment == 'random1': args.experiment = 'random'
     logger.log("creating model and diffusion...")
     from mytokenizers import regexTokenizer
-    tokenizer = regexTokenizer(max_len=getattr(args, 'token_max_length', 256))
+    # Vocab resolution is opt-in via --vocab_path only. It must NOT be
+    # inferred from --data_dir: a checkpoint's training data_dir and its
+    # vocab file are not reliably the same path (confirmed by a regression --
+    # inferring it from data_dir silently swapped in the wrong vocab for a
+    # checkpoint that was working fine before). Default is the exact
+    # original hardcoded behavior; only override when explicitly asked to,
+    # e.g. for a checkpoint trained on a different vocab (retro).
+    vocab_path = getattr(args, 'vocab_path', '') or '../../datasets/SMILES/generate_vocab.txt'
+    tokenizer = regexTokenizer(path=vocab_path, max_len=getattr(args, 'token_max_length', 256))
     model = TransformerNetModel2(
         in_channels=32,  # 3, DEBUG**
         # deep_channels = 10,
@@ -124,6 +132,67 @@ def main():
             denoise=getattr(args, 'denoise', False),
             denoise_rate=getattr(args, 'denoise_rate', 0.2),
         )
+
+    # ============================================================
+    # Optional token-wise adaptive step schedule (per-position reduced-step
+    # inference). Built offline by reduced_step_profile.py (Stage 1) +
+    # trajectory_analysis.py (Stages 2-4); see ADAPTIVE_STEP_INFERENCE.md.
+    # Mutually exclusive with --use_dpm_solver: both are "spend K model
+    # calls instead of T" strategies, this one just lets different sequence
+    # positions spend those K calls at different timesteps.
+    # ============================================================
+    step_matrix = None
+    if getattr(args, 'step_matrix_path', ''):
+        if getattr(args, 'use_dpm_solver', False):
+            raise ValueError(
+                "--step_matrix_path and --use_dpm_solver are mutually "
+                "exclusive samplers; pick one."
+            )
+        from improved_diffusion.dpm_solver import load_step_matrix
+        logger.log(f"### Loading token-wise step matrix from {args.step_matrix_path}")
+        step_matrix = load_step_matrix(
+            args.step_matrix_path,
+            K=args.token_adaptive_steps,
+            seq_len=tokenizer.max_len,
+        )
+        logger.log(f"### Step matrix loaded: shape={step_matrix.shape}")
+
+    # Token-adaptive DPM-Solver, like `dpm_solver_diffusion` above, needs the
+    # full un-respaced base schedule (step_matrix indexes raw timesteps
+    # 0..diffusion_steps-1), not SpacedDiffusion's uniform-stride subsample.
+    #
+    # If an adaptive-noising schedule is going to be loaded below, this must
+    # be constructed with adaptive_noising=True (+ token_max_length/pad_tok_id)
+    # up front so its schedule arrays are already (T, S) -- load_adaptive_
+    # schedule()/update_time_discretized_parameters() only overwrite an
+    # existing 2-D array in place, they do not expand a 1-D one.
+    token_adaptive_diffusion = None
+    if step_matrix is not None:
+        use_adaptive_noise = bool(
+            getattr(args, 'adaptive_schedule_path', '')
+            and os.path.exists(args.adaptive_schedule_path)
+        )
+        token_adaptive_diffusion = gd.GaussianDiffusion(
+            betas=gd.get_named_beta_schedule('sqrt', 2000),
+            model_mean_type=gd.ModelMeanType.START_X,
+            model_var_type=gd.ModelVarType.FIXED_LARGE,
+            loss_type=gd.LossType.E2E_MSE,
+            rescale_timesteps=True,
+            model_arch='transformer',
+            training_mode='e2e',
+            reg_rate=getattr(args, 'reg_rate', 0.0),
+            denoise=getattr(args, 'denoise', False),
+            denoise_rate=getattr(args, 'denoise_rate', 0.2),
+            adaptive_noising=use_adaptive_noise,
+            token_max_length=tokenizer.max_len if use_adaptive_noise else None,
+            pad_tok_id=tokenizer.toktoid['[PAD]'] if use_adaptive_noise else None,
+        )
+        if use_adaptive_noise:
+            logger.log(
+                f"### Loading adaptive noise schedule from {args.adaptive_schedule_path} "
+                "for token-adaptive DPM-Solver..."
+            )
+            token_adaptive_diffusion.load_adaptive_schedule(args.adaptive_schedule_path)
 
     print(args.model_path)
     model.load_state_dict(
@@ -193,6 +262,18 @@ def main():
                 order=args.dpm_solver_order,
                 method=args.dpm_solver_method,
             )
+        elif step_matrix is not None:
+            print(f'sampling with token-adaptive DPM-Solver++ (K={step_matrix.shape[0]})')
+            sample = token_adaptive_diffusion.token_adaptive_dpm_solver_sample_loop(
+                model,
+                sample_shape,
+                step_matrix=step_matrix,
+                clip_denoised=args.clip_denoised,
+                denoised_fn=None,
+                model_kwargs=model_kwargs,
+                progress=True,
+                desc=(desc_state, desc_mask),
+            )
         else:
             print('use_ddim:{}',args.use_ddim)
             sample_fn = (
@@ -220,8 +301,13 @@ def main():
     sample = cands.indices
     sample = sample.squeeze(-1)
     print(sample)
-    from mytokenizers import regexTokenizer
-    tokenizer = regexTokenizer()
+    # NOTE: previously re-imported and re-instantiated `regexTokenizer()`
+    # here with no `path=`, which silently shadowed the correctly-configured
+    # `tokenizer` from earlier in this function (built with --vocab_path)
+    # and decoded through the wrong vocab file whenever it differed from
+    # the hardcoded default -- this was invisible as long as every run used
+    # the default (forward/ChEBI) checkpoint, since both vocabs happened to
+    # agree. Reuse the already-correct `tokenizer` instead of rebuilding it.
     c = tokenizer.decode(sample)
     if os.path.dirname(args.outputdir):
         os.makedirs(os.path.dirname(args.outputdir), exist_ok=True)
@@ -281,6 +367,9 @@ def create_argparser():
                          dpm_solver_steps=10,
                          dpm_solver_order=2,
                          dpm_solver_method='multistep',
+                         step_matrix_path='',
+                         token_adaptive_steps=10,
+                         vocab_path='',
                          )
     defaults.update(model_and_diffusion_defaults())
     defaults.update(text_defaults)
