@@ -67,7 +67,7 @@ def fevaluate(gt_smis,op_smis, morgan_r=2):
         try:
             gt_m = Chem.MolFromSmiles(gt_smi)
             ot_m = Chem.MolFromSmiles(ot_smi)
-            if ot_m == None: raise ValueError('Bad SMILES')
+            if gt_m is None or ot_m is None: raise ValueError('Bad SMILES')
             outputs.append((gt_m, ot_m))
         except:
             bad_mols += 1
@@ -136,7 +136,7 @@ def print_single_results(metrics, title="Evaluation Results"):
 if __name__ == '__main__':
     import sys, os, glob, re
 
-    filepath = sys.argv[1] if len(sys.argv) > 1 else '/home/ee/phd/eez248435/tgm-dlm_merged/generation_outputs/sampled_smiles_200k_3108_seed108.txt'
+    filepath = sys.argv[1] if len(sys.argv) > 1 else '/home/ee/phd/eez248435/tgm-dlm_merged/generation_outputs/run2_adaptive_K3_seed108.txt'
     
     dir_name = os.path.dirname(filepath) or '.'
     base_name = os.path.basename(filepath)

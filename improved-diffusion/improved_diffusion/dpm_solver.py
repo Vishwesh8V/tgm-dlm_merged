@@ -1542,6 +1542,7 @@ def preview_dpm_solver_steps(dpm_solver, steps, skip_type="time_uniform", t_T=1.
 
 
 
+class TokenAdaptiveDPMSolver:
     """
     Second-order multistep DPM-Solver++ on a token-wise discrete schedule
     J[K, L]: column `l` of J lists the K diffusion timesteps (strictly

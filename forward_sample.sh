@@ -24,12 +24,12 @@ CUDA_DEVICE="0"
 
 # Point this at whichever checkpoint you want to evaluate, e.g. the latest
 # PLAIN_ema_0.9999_<step>.pt written by forward_train.sh into checkpoints_forward/
-MODEL_PATH="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints_forward/PLAIN_ema_0.9999_140000.pt"
+MODEL_PATH="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints_forward/PLAIN_ema_0.9999_170000.pt"
 
 # Set path to .npy schedule file, or set to "none" for standard uniform schedule
-ADAPTIVE_SCHEDULE="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints_forward/adaptive_schedule/alpha_cumprod_step_130000.npy"
+ADAPTIVE_SCHEDULE="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints_forward/adaptive_schedule/alpha_cumprod_step_160000.npy"
 
-OUTPUT_FILE="../../generation_outputs/fp_full_140k.txt"
+OUTPUT_FILE="../../generation_outputs/fp_dpm200_170k_test2.txt"
 
 NUM_SAMPLES=1000
 BATCH_SIZE=64
@@ -39,16 +39,26 @@ TIMESTEP_RESPACING=1
 SEEDS="108"
 
 # --- DPM-Solver++ (fast ODE sampler) ---
-USE_DPM_SOLVER=False
-DPM_SOLVER_STEPS=2000
+USE_DPM_SOLVER=True
+DPM_SOLVER_STEPS=2
 DPM_SOLVER_ORDER=2
 DPM_SOLVER_METHOD="multistep"
+
+# --- Token-adaptive step schedule (per-position reduced-step inference) ---
+# Alternative to DPM-Solver++ above -- mutually exclusive with it (text_sample.py
+# will error out if both are set). Produced offline by:
+#   1. reduced_step_profile.py   (Stage 1: profile the checkpoint)
+#   2. trajectory_analysis.py    gradient -> monitor -> allocate  (Stages 2-4)
+# Stage 4's "allocate" step writes a `<name>_J.npy` file -- point STEP_MATRIX_PATH
+# at that. Set to "" or "none" to disable and use one of the samplers above instead.
+STEP_MATRIX_PATH=""
+TOKEN_ADAPTIVE_STEPS=200
 
 # --- Mixed-Space diffusion (must match what the checkpoint was trained with) ---
 LEARNED_MEAN_EMBED=True
 DENOISE=True
 DENOISE_RATE=0.2
-REG_RATE=0.1
+REG_RATE=0.0
 
 # --- Vocab (must match what the checkpoint was trained with) ---
 # The forward checkpoint likely uses its own vocab, not the default ChEBI/
@@ -98,6 +108,8 @@ echo " Adaptive Schedule : ${ADAPTIVE_SCHEDULE:-"(None - Uniform Baseline)"}"
 echo " Data Directory    : ${DATASETS_DIR}"
 echo " Vocab Path        : ${VOCAB_PATH}"
 echo " Timestep Respacing: ${TIMESTEP_RESPACING}"
+echo " DPM-Solver++      : ${USE_DPM_SOLVER} (steps=${DPM_SOLVER_STEPS}, order=${DPM_SOLVER_ORDER}, method=${DPM_SOLVER_METHOD})"
+echo " Token-Adaptive     : ${STEP_MATRIX_PATH:-"(None - not using token-adaptive step schedule)"}"
 echo " Batch Size        : ${BATCH_SIZE}"
 echo " NUM_SAMPLES       : ${NUM_SAMPLES}"
 echo " Target Base Name  : ${OUT_DIRNAME}/${OUT_STEM}.txt"
@@ -113,6 +125,25 @@ if [ -n "${ADAPTIVE_SCHEDULE}" ] && [ "${ADAPTIVE_SCHEDULE}" != "none" ] && [ "$
     echo " -> Found adaptive schedule file! Enabling adaptive noise sampling."
 else
     echo " -> Running with UNIFORM baseline schedule (Adaptive Noising: OFF)."
+fi
+
+# Determine if a token-adaptive step-matrix file is set; mutually exclusive
+# with DPM-Solver++ (text_sample.py enforces this too, but fail fast here
+# with a clearer message before spending time loading the model).
+STEP_MATRIX_ARG=""
+if [ -n "${STEP_MATRIX_PATH}" ] && [ "${STEP_MATRIX_PATH}" != "none" ] && [ "${STEP_MATRIX_PATH}" != "false" ]; then
+    if [ ! -f "${STEP_MATRIX_PATH}" ]; then
+        echo "ERROR: STEP_MATRIX_PATH is set to '${STEP_MATRIX_PATH}' but that file does not exist." >&2
+        exit 1
+    fi
+    if [ "${USE_DPM_SOLVER}" = "True" ] || [ "${USE_DPM_SOLVER}" = "true" ]; then
+        echo "ERROR: STEP_MATRIX_PATH and USE_DPM_SOLVER are mutually exclusive samplers -- pick one." >&2
+        exit 1
+    fi
+    STEP_MATRIX_ARG="--step_matrix_path ${STEP_MATRIX_PATH} --token_adaptive_steps ${TOKEN_ADAPTIVE_STEPS}"
+    echo " -> Found step-matrix file! Using token-adaptive per-position step allocation (K=${TOKEN_ADAPTIVE_STEPS})."
+else
+    echo " -> Not using token-adaptive step schedule."
 fi
 
 GENERATED_FILES=()
@@ -152,6 +183,7 @@ for s in "${SEED_ARRAY[@]}"; do
       --dpm_solver_steps "${DPM_SOLVER_STEPS}" \
       --dpm_solver_order "${DPM_SOLVER_ORDER}" \
       --dpm_solver_method "${DPM_SOLVER_METHOD}" \
+      ${STEP_MATRIX_ARG} \
       "$@"
 done
 

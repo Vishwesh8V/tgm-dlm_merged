@@ -91,6 +91,22 @@ def main():
         step_stride = 10
     use_timesteps = [i for i in range(0, 2000, step_stride)]
 
+    # Same robust pattern as dpm_solver_diffusion/token_adaptive_diffusion
+    # below: derive adaptive_noising from whether a real schedule path was
+    # given, rather than requiring a SEPARATE --adaptive_noising flag to be
+    # kept in sync with it. The old decoupled-flag version left this object
+    # built with adaptive_noising=False (1-D alphas_cumprod) whenever
+    # --adaptive_schedule_path was passed without ALSO explicitly passing
+    # --adaptive_noising true -- and load_adaptive_schedule() below runs
+    # unconditionally whenever a path is given, so it would then crash
+    # trying to write 2-D-style into a still-1-D array. This also used to
+    # crash needlessly even when `diffusion` was never going to be used for
+    # sampling at all (e.g. --step_matrix_path or --use_dpm_solver runs).
+    use_adaptive_noise_plain = bool(
+        getattr(args, 'adaptive_schedule_path', '')
+        and os.path.exists(args.adaptive_schedule_path)
+    )
+
     diffusion = SpacedDiffusion(
         use_timesteps=use_timesteps,
         betas=gd.get_named_beta_schedule('sqrt', 2000),
@@ -103,23 +119,39 @@ def main():
         reg_rate=getattr(args, 'reg_rate', 0.0),
         denoise=getattr(args, 'denoise', False),
         denoise_rate=getattr(args, 'denoise_rate', 0.2),
-        adaptive_noising=getattr(args, 'adaptive_noising', False),
-        token_max_length=tokenizer.max_len,
-        pad_tok_id=tokenizer.toktoid['[PAD]'],
+        adaptive_noising=use_adaptive_noise_plain,
+        token_max_length=tokenizer.max_len if use_adaptive_noise_plain else None,
+        pad_tok_id=tokenizer.toktoid['[PAD]'] if use_adaptive_noise_plain else None,
         save_dir=getattr(args, 'out_dir', './generation_outputs'),
     )
 
-    if getattr(args, 'adaptive_schedule_path', '') and os.path.exists(args.adaptive_schedule_path):
+    if use_adaptive_noise_plain:
         logger.log(f"Loading adaptive schedule from {args.adaptive_schedule_path}...")
         diffusion.load_adaptive_schedule(args.adaptive_schedule_path)
+    elif getattr(args, 'adaptive_schedule_path', ''):
+        logger.log(f"WARNING: --adaptive_schedule_path={args.adaptive_schedule_path} "
+                   "does not exist -- falling back to the plain (non-adaptive) noise schedule.")
 
     # DPM-Solver++ picks its own log-SNR-spaced steps from the *full* noise
     # schedule, so it should not ride on top of `diffusion`'s uniform-stride
     # SpacedDiffusion subsampling (`--timestep_respacing`). Build a plain,
     # un-respaced GaussianDiffusion for it instead; `--dpm_solver_steps` plays
     # the role `--timestep_respacing` plays for the other two samplers.
+    #
+    # Same adaptive-noising requirement as `diffusion` above and
+    # `token_adaptive_diffusion` below: if this checkpoint was trained
+    # against a per-position adaptive noise schedule, sampling from it with
+    # the plain 1-D schedule silently diverges from training. adaptive_noising
+    # must be passed at construction time (load_adaptive_schedule() only
+    # overwrites an existing (T, S) array in place, it does not expand a
+    # 1-D one), so this checks --adaptive_schedule_path up front rather than
+    # loading it after the fact.
     dpm_solver_diffusion = None
     if getattr(args, 'use_dpm_solver', False):
+        use_adaptive_noise_dpm = bool(
+            getattr(args, 'adaptive_schedule_path', '')
+            and os.path.exists(args.adaptive_schedule_path)
+        )
         dpm_solver_diffusion = gd.GaussianDiffusion(
             betas=gd.get_named_beta_schedule('sqrt', 2000),
             model_mean_type=gd.ModelMeanType.START_X,
@@ -131,7 +163,22 @@ def main():
             reg_rate=getattr(args, 'reg_rate', 0.0),
             denoise=getattr(args, 'denoise', False),
             denoise_rate=getattr(args, 'denoise_rate', 0.2),
+            adaptive_noising=use_adaptive_noise_dpm,
+            token_max_length=tokenizer.max_len if use_adaptive_noise_dpm else None,
+            pad_tok_id=tokenizer.toktoid['[PAD]'] if use_adaptive_noise_dpm else None,
         )
+        if use_adaptive_noise_dpm:
+            logger.log(
+                f"### Loading adaptive noise schedule from {args.adaptive_schedule_path} "
+                "for DPM-Solver++..."
+            )
+            dpm_solver_diffusion.load_adaptive_schedule(args.adaptive_schedule_path)
+        elif getattr(args, 'adaptive_schedule_path', ''):
+            logger.log(
+                f"### WARNING: --adaptive_schedule_path={args.adaptive_schedule_path} "
+                "does not exist -- DPM-Solver++ is falling back to the plain "
+                "(non-adaptive) noise schedule."
+            )
 
     # ============================================================
     # Optional token-wise adaptive step schedule (per-position reduced-step

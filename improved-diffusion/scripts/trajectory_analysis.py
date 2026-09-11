@@ -43,6 +43,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.interpolate import UnivariateSpline
 
+# np.trapezoid only exists in NumPy >= 2.0 (it replaced the older np.trapz,
+# which NumPy 2.x deprecates but still keeps working for now). Fall back to
+# np.trapz on older NumPy so this script runs on either without depending on
+# exactly which NumPy the environment happens to have.
+_trapz = getattr(np, "trapezoid", None) or np.trapz
+
 
 def infer_active_positions(valid_count, min_frac=0.5):
     """
@@ -264,7 +270,7 @@ def monitor_density(gradient_npz, output_dir, mode="paper", plot_positions=None)
         x = logsnr[idx_sorted, i].astype(np.float64)
         w = np.sqrt(np.maximum(activity[idx_sorted, i], 0.0))
 
-        area = np.trapezoid(w, x)
+        area = _trapz(w, x)
         if area > 0:
             density[idx_sorted, i] = w / area
 
@@ -453,7 +459,7 @@ def allocate_schedule(
             x = steps[idx].astype(np.float64)
             y = np.maximum(p[idx], 0.0)
 
-            area = float(y[0]) if idx.size == 1 else float(np.trapezoid(y, x))
+            area = float(y[0]) if idx.size == 1 else float(_trapz(y, x))
             bin_areas[b, i] = max(area, 0.0)
 
         n_pick = K - 2
