@@ -310,7 +310,7 @@ def main():
                 method=args.dpm_solver_method,
             )
         elif step_matrix is not None:
-            print(f'sampling with token-adaptive DPM-Solver++ (K={step_matrix.shape[0]})')
+            print(f'sampling with token-adaptive DPM-Solver++ (K={step_matrix.shape[0]}, order={args.dpm_solver_order})')
             sample = token_adaptive_diffusion.token_adaptive_dpm_solver_sample_loop(
                 model,
                 sample_shape,
@@ -320,6 +320,7 @@ def main():
                 model_kwargs=model_kwargs,
                 progress=True,
                 desc=(desc_state, desc_mask),
+                order=args.dpm_solver_order,
             )
         else:
             print('use_ddim:{}',args.use_ddim)

@@ -1782,6 +1782,33 @@ class GaussianDiffusion:
         assert isinstance(shape, (tuple, list))
         assert desc is not None, "dpm_solver_sample_loop requires `desc` (desc_state, desc_mask) text conditioning"
 
+        # `self.alphas_cumprod` is `(T,)` unless a per-position adaptive noise
+        # schedule was trained/loaded (`load_adaptive_schedule` /
+        # `_expand_schedule_to_2d`), in which case it is `(T, L)`.
+        # `NoiseScheduleVP` below is built for a single scalar alpha_bar per
+        # timestep -- handing it a `(T, L)` array silently corrupts the
+        # schedule (it flattens to `(1, T*L)` while `total_N` stays `T`, so
+        # only the noisiest `~T/L` real timesteps ever get read back out,
+        # scrambled across positions). That is NOT the same failure mode as
+        # simply averaging over positions: it produces a shorter, scrambled,
+        # partially-wrong schedule rather than a shorter-but-coherent one.
+        #
+        # Route this case through `token_adaptive_dpm_solver_sample_loop`
+        # instead, with every column of its step matrix set to the SAME K
+        # timesteps. That reproduces "uniform trajectory" (every position
+        # visits the same steps) while still indexing the real, un-collapsed
+        # per-position alpha_bar table at each step -- nothing is averaged
+        # or flattened away; only *which* raw timestep indices to visit is
+        # decided from a collapsed reference curve (see helper below), not
+        # the update math itself.
+        if isinstance(self.alphas_cumprod, np.ndarray) and self.alphas_cumprod.ndim == 2:
+            return self._dpm_solver_uniform_via_token_adaptive(
+                model, shape,
+                noise=noise, clip_denoised=clip_denoised, denoised_fn=denoised_fn,
+                model_kwargs=model_kwargs, device=device, progress=progress, desc=desc,
+                steps=steps, order=order, skip_type=skip_type,
+            )
+
         if noise is not None:
             img = noise.to(device)
         else:
@@ -1790,8 +1817,13 @@ class GaussianDiffusion:
                 img = img + model.mean_embed[None, None].to(device)
 
         desc = (desc[0].to(device), desc[1].to(device))
+        mean_embed = getattr(model, 'mean_embed', None)
         if progress:
-            print('Text Guiding Generation (DPM-Solver++) ......')
+            absorb_note = (
+                f" + discrete absorbing substitution (denoise_rate={self.denoise_rate})"
+                if (self.denoise and mean_embed is not None) else ""
+            )
+            print(f'Text Guiding Generation (DPM-Solver++{absorb_note}) ......')
 
         noise_schedule = NoiseScheduleVP(
             schedule='discrete',
@@ -1801,7 +1833,35 @@ class GaussianDiffusion:
             self, model, noise_schedule, desc,
             clip_denoised=clip_denoised, denoised_fn=denoised_fn, model_kwargs=model_kwargs,
         )
-        dpm_solver = DPM_Solver(model_fn, noise_schedule, algorithm_type="dpmsolver++")
+
+        # Mixed-Space Diffusion's other pillar: discrete absorbing
+        # substitution, matching training's `q_sample`. `DPM_Solver` has a
+        # `correcting_xt_fn(x, t, step)` hook built for exactly this shape
+        # of correction -- called after every update and, for every step
+        # past the first, BEFORE the next model call reads that x (see its
+        # `sample()` multistep loop), matching q_sample's convention that
+        # the model always sees an already-absorbed x_t. Only ever active
+        # when this checkpoint was actually trained with `denoise=True`.
+        correcting_xt_fn = None
+        if self.denoise and mean_embed is not None:
+            mean_embed_dev = mean_embed.to(device)
+
+            def correcting_xt_fn(x_t, t, step):
+                # sigma(t) = sqrt(1 - alpha_bar_t), the SAME marginal
+                # quantity q_sample scales by denoise_rate -- not
+                # p_mean_variance's local posterior variance, which is a
+                # different (FIXED_LARGE-beta-derived) quantity.
+                sigma_t = noise_schedule.marginal_std(t)
+                mask_rate = (sigma_t * self.denoise_rate).clamp(0.0, 1.0)
+                mask_rate_expand = mask_rate.view(1, 1).expand(x_t.shape[0], x_t.shape[1])
+                random_mask = mask_rate_expand.bernoulli()[..., None].expand(x_t.shape)
+                mean_embed_expand = mean_embed_dev[None, None].expand(x_t.shape)
+                return th.where(random_mask == 0, x_t, mean_embed_expand)
+
+        dpm_solver = DPM_Solver(
+            model_fn, noise_schedule, algorithm_type="dpmsolver++",
+            correcting_xt_fn=correcting_xt_fn,
+        )
 
         try:
             from .dpm_solver import preview_dpm_solver_steps
@@ -1830,6 +1890,111 @@ class GaussianDiffusion:
             )
         return sample
 
+    def _dpm_solver_uniform_via_token_adaptive(
+        self,
+        model,
+        shape,
+        noise,
+        clip_denoised,
+        denoised_fn,
+        model_kwargs,
+        device,
+        progress,
+        desc,
+        steps,
+        order,
+        skip_type,
+    ):
+        """
+        "Uniform trajectory" DPM-Solver++ for the case where `self.alphas_cumprod`
+        is a genuine per-position `(T, L)` table (adaptive noising was trained
+        with / loaded). Reuses `TokenAdaptiveDPMSolver`'s per-position-aware
+        update math (via `token_adaptive_dpm_solver_sample_loop`) with a step
+        matrix that is identical across every column, so every position
+        visits the same K timesteps -- the defining property of "uniform
+        trajectory" -- while the actual alpha/sigma/lambda used in each
+        update still comes from the real, un-collapsed table at
+        `[t, position]`. Nothing is averaged into the denoising math itself.
+
+        `order` is honored exactly (1 or 2, see `TokenAdaptiveDPMSolver`'s
+        docstring) -- `order=1` is DDIM-equivalent at this schedule.
+
+        The *only* thing computed from a collapsed (mean-over-position) 1-D
+        reference schedule is *which* K raw timestep indices to visit --
+        i.e. the same role `get_time_steps` plays in the plain 1-D path.
+        That choice is comparatively low-stakes (it only has to land on a
+        reasonable set of integer indices in `[0, T-1]`); it is the transitions
+        between those indices, not the choice of the indices, where losing
+        per-position information would actually corrupt sample quality.
+        """
+        from .dpm_solver import NoiseScheduleVP, DPM_Solver
+
+        L = shape[1]
+        if steps < 2:
+            raise ValueError(
+                f"dpm_solver_steps must be >= 2 for the per-position adaptive "
+                f"noise schedule path, got {steps}."
+            )
+        if order not in (1, 2):
+            raise ValueError(
+                f"--dpm_solver_order={order} is not supported for the "
+                f"per-position adaptive noise schedule path (TokenAdaptiveDPMSolver "
+                f"only implements order 1 or 2 -- there is no third-order "
+                f"correction here)."
+            )
+
+        ref_alpha_bar = np.asarray(self.alphas_cumprod).mean(axis=1)
+        ref_schedule = NoiseScheduleVP(
+            schedule='discrete',
+            alphas_cumprod=th.tensor(ref_alpha_bar, dtype=th.float32, device=device),
+        )
+        # `model_fn=None` is safe here: get_time_steps only reads
+        # `self.noise_schedule`, it never calls `self.model`.
+        ref_solver = DPM_Solver(model_fn=None, noise_schedule=ref_schedule, algorithm_type="dpmsolver++")
+
+        t_T = 1.
+        t_0 = 1. / ref_schedule.total_N
+        # `get_time_steps(..., N=M, ...)` returns `M + 1` grid points (see
+        # dpm_solver.py's own multistep loop: `timesteps.shape[0] - 1 ==
+        # steps`, with the model called `steps` times, i.e. only the *first*
+        # `steps` of those `steps + 1` points get a fresh denoiser call).
+        # `TokenAdaptiveDPMSolver` uses a different convention: every row of
+        # `J`, including the last, gets a call -- `K` rows means `K`
+        # evaluations, full stop. To land on exactly `steps` evaluations
+        # here, request `N=steps-1` (-> `steps` grid points), not `N=steps`.
+        t = ref_solver.get_time_steps(skip_type=skip_type, t_T=t_T, t_0=t_0, N=steps - 1, device=device)
+        idx = th.round(t * ref_schedule.total_N).long() - 1
+        idx = idx.clamp(0, ref_schedule.total_N - 1)
+        chosen_steps = idx.cpu().numpy()
+
+        # Force exact endpoints and strict monotonicity -- required by
+        # `token_adaptive_dpm_solver_sample_loop` and possibly disturbed by
+        # rounding, especially for small `steps`.
+        chosen_steps[0] = self.num_timesteps - 1
+        chosen_steps[-1] = 0
+        chosen_steps = np.unique(chosen_steps)[::-1]
+        if chosen_steps.size != steps:
+            raise RuntimeError(
+                f"Requested steps={steps} but rounding collapsed this to "
+                f"{chosen_steps.size} unique timesteps ({chosen_steps.tolist()}); "
+                "try a smaller --dpm_solver_steps or check the loaded schedule."
+            )
+
+        if progress:
+            order_note = " order=1/DDIM-equivalent" if order == 1 else " order=2"
+            print(
+                'Text Guiding Generation (DPM-Solver++, uniform trajectory, '
+                f'per-position adaptive noise schedule,{order_note}) ......'
+            )
+
+        step_matrix = np.tile(chosen_steps[:, None], (1, L))
+        return self.token_adaptive_dpm_solver_sample_loop(
+            model, shape, step_matrix=step_matrix,
+            noise=noise, clip_denoised=clip_denoised, denoised_fn=denoised_fn,
+            model_kwargs=model_kwargs, device=device, progress=False, desc=desc,
+            order=order,
+        )
+
     def token_adaptive_dpm_solver_sample_loop(
         self,
         model,
@@ -1843,6 +2008,7 @@ class GaussianDiffusion:
         progress=False,
         desc=None,
         callback=None,
+        order=2,
     ):
         """
         Generate samples using a token-wise (per sequence-position) reduced
@@ -1860,14 +2026,25 @@ class GaussianDiffusion:
         accordingly; see `scripts/reduced_step_profile.py` and
         `scripts/trajectory_analysis.py`.
 
-        Unlike `dpm_solver_sample_loop`, this always uses second-order
-        multistep DPM-Solver++ (matching `TokenAdaptiveDPMSolver`) and has no
-        `steps`/`order`/`method`/`skip_type` knobs -- the schedule itself
-        *is* the step grid, there is nothing left to derive automatically.
+        Unlike `dpm_solver_sample_loop`, this has no `steps`/`method`/
+        `skip_type` knobs -- the schedule itself *is* the step grid, there
+        is nothing left to derive automatically. `order` is still exposed:
+        `2` (default) is DPM-Solver++(2M); `1` chains first-order-only
+        transitions, which is exactly DDIM (eta=0) at whatever schedule
+        `step_matrix` visits -- see `TokenAdaptiveDPMSolver`'s docstring for
+        the derivation. This is the supported way to get DDIM-equivalent
+        results when `self.alphas_cumprod` is genuinely 2-D (adaptive
+        noising): `GaussianDiffusion.ddim_sample_loop` handles that schedule
+        safely but has no discrete-absorption support at all, whereas this
+        path already does (see `_apply_absorption`).
 
         :param shape: the shape of the samples, (N, seqlen, channels).
         :param step_matrix: a `[K, L]` int array/tensor (see above). `K` must
-            be >= 3 and `L` must equal `shape[1]`.
+            be >= 2 and `L` must equal `shape[1]`. `K=2` is a valid
+            first-order-only run (see `TokenAdaptiveDPMSolver.sample`); the
+            second-order correction only engages from `K=3` onward when
+            `order=2`.
+        :param order: `1` or `2`, see above. Default `2`.
         :param desc: a `(desc_state, desc_mask)` text-conditioning tuple,
             same as `p_sample_loop`/`dpm_solver_sample_loop`.
         :param callback: optional `callback(x_t, pred_xstart)` called once
@@ -1893,10 +2070,11 @@ class GaussianDiffusion:
                 f"step_matrix must be [K, {L}], got {tuple(step_matrix.shape)}."
             )
         K = step_matrix.shape[0]
-        if K < 3:
+        if K < 2:
             raise ValueError(
-                "token_adaptive_dpm_solver_sample_loop requires K >= 3 rows "
-                "in step_matrix."
+                "token_adaptive_dpm_solver_sample_loop requires K >= 2 rows "
+                "in step_matrix (K=2 runs first-order only; the second-order "
+                "correction engages from K=3 onward)."
             )
         if not np.all(step_matrix[:-1] > step_matrix[1:]):
             raise ValueError(
@@ -1927,7 +2105,13 @@ class GaussianDiffusion:
             model_kwargs = {}
 
         if progress:
-            print('Text Guiding Generation (Token-Adaptive DPM-Solver++) ......')
+            absorb_note = (
+                " + discrete absorbing substitution (denoise_rate="
+                f"{self.denoise_rate})" if (self.denoise and getattr(model, 'mean_embed', None) is not None)
+                else ""
+            )
+            order_note = " (DDIM-equivalent, first-order)" if order == 1 else " (2M)"
+            print(f'Text Guiding Generation (Token-Adaptive DPM-Solver++{order_note}{absorb_note}) ......')
 
         # `self.alphas_cumprod` is 1-D `(T,)` unless a per-position adaptive
         # noise schedule was trained/loaded (see `_expand_schedule_to_2d`),
@@ -2012,6 +2196,10 @@ class GaussianDiffusion:
             model_fn=token_model_fn,
             alphas_cumprod_2d=alpha_bar_2d,
             correcting_x0_fn=None,
+            denoise=self.denoise,
+            denoise_rate=self.denoise_rate,
+            mean_embed=getattr(model, 'mean_embed', None),
+            order=order,
         )
 
         J_tensor = th.from_numpy(step_matrix).long().to(device)

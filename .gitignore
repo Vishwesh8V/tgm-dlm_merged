@@ -33,6 +33,16 @@ env/
 *.log
 logs/
 
+evaluation_outputs/*
+evaluation_outputs_50test/*
+evaluation_outputs_100test/*
+evaluation_outputs_200test/*
+evaluation_outputs_uniform_200test/*
+evaluation_outputs_uniform_200test_3seed/*
+reduced_step_outputs/trajectory_forward/*
+reduced_step_outputs/trajectory_retro/*
+reduced_step_outputs/*
+
 # Checkpoints / model weights
 *.pt
 *.pth

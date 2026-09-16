@@ -9,39 +9,40 @@ set -e
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export WANDB_MODE="${WANDB_MODE:-offline}"
 export OMPI_MCA_btl="^openib"
-#!/usr/bin/env bash
-# ==============================================================================
-# Shell Script: Run Inference / Sampling for TGM-DLM
-# ==============================================================================
-
 
 # ==============================================================================
 # User Configuration (Edit parameters here)
+#
+# Every value below can also be overridden by exporting the same-named
+# environment variable before calling this script (same pattern already
+# used for CUDA_VISIBLE_DEVICES/WANDB_MODE above) -- lets sweep scripts
+# drive this file directly instead of duplicating its argument-building
+# logic. Nothing changes if no env vars are set.
 # ==============================================================================
-CUDA_DEVICE="0"
+CUDA_DEVICE="${CUDA_DEVICE:-0}"
 
-MODEL_PATH="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints/PLAIN_ema_0.9999_200000.pt"
+MODEL_PATH="${MODEL_PATH:-/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints/PLAIN_ema_0.9999_200000.pt}"
 
 # Set path to .npy schedule file, or set to "none" for standard uniform schedule
-ADAPTIVE_SCHEDULE="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints/adaptive_schedule/alpha_cumprod_step_190000.npy"
+ADAPTIVE_SCHEDULE="${ADAPTIVE_SCHEDULE:-/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints/adaptive_schedule/alpha_cumprod_step_190000.npy}"
 
-OUTPUT_FILE="../../generation_outputs/sampled_smiles_200k_dpm100_1009.txt"
+OUTPUT_FILE="${OUTPUT_FILE:-../../generation_outputs/sampled_smiles_200k_dpm100_1009.txt}"
 
-NUM_SAMPLES=1000
-BATCH_SIZE=64
-TIMESTEP_RESPACING=1
+NUM_SAMPLES="${NUM_SAMPLES:-1000}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
+TIMESTEP_RESPACING="${TIMESTEP_RESPACING:-1}"
 
 # Random Seeds: single seed "121" or multiple seeds "101,102,103"
-SEEDS="108"
+SEEDS="${SEEDS:-108, 122, 137, 115, 146}"
 
 # --- DPM-Solver++ (fast ODE sampler) ---
 # When enabled, overrides the p_sample_loop/ddim sampler above; TIMESTEP_RESPACING
 # is not used for this path (it works on the full 2000-step noise schedule and
 # picks its own steps). Typically 10-20 steps is enough.
-USE_DPM_SOLVER=True
-DPM_SOLVER_STEPS=100
-DPM_SOLVER_ORDER=2
-DPM_SOLVER_METHOD="multistep"
+USE_DPM_SOLVER="${USE_DPM_SOLVER:-True}"
+DPM_SOLVER_STEPS="${DPM_SOLVER_STEPS:-100}"
+DPM_SOLVER_ORDER="${DPM_SOLVER_ORDER:-2}"
+DPM_SOLVER_METHOD="${DPM_SOLVER_METHOD:-multistep}"
 
 # --- Token-adaptive step schedule (per-position reduced-step inference) ---
 # Alternative to DPM-Solver++ above -- mutually exclusive with it (text_sample.py
@@ -50,14 +51,14 @@ DPM_SOLVER_METHOD="multistep"
 #   2. trajectory_analysis.py    gradient -> monitor -> allocate  (Stages 2-4)
 # Stage 4's "allocate" step writes a `<name>_J.npy` file -- point STEP_MATRIX_PATH
 # at that. Set to "" or "none" to disable and use one of the samplers above instead.
-STEP_MATRIX_PATH=""
-TOKEN_ADAPTIVE_STEPS=200
+STEP_MATRIX_PATH="${STEP_MATRIX_PATH:-}"
+TOKEN_ADAPTIVE_STEPS="${TOKEN_ADAPTIVE_STEPS:-200}"
 
 # --- Mixed-Space diffusion ---
-LEARNED_MEAN_EMBED=True
-DENOISE=True
-DENOISE_RATE=0.2
-REG_RATE=0.1
+LEARNED_MEAN_EMBED="${LEARNED_MEAN_EMBED:-True}"
+DENOISE="${DENOISE:-True}"
+DENOISE_RATE="${DENOISE_RATE:-0.2}"
+REG_RATE="${REG_RATE:-0.1}"
 # ==============================================================================
 
 # --- Determine Directory Structure ---
@@ -71,7 +72,7 @@ else
 fi
 
 SCRIPTS_DIR="${PROJECT_ROOT}/improved-diffusion/scripts"
-DATASETS_DIR="${PROJECT_ROOT}/datasets/SMILES"
+DATASETS_DIR="${DATASETS_DIR:-${PROJECT_ROOT}/datasets/SMILES}"
 OUT_DIR="${PROJECT_ROOT}/generation_outputs"
 
 # --- Seed Configuration ---

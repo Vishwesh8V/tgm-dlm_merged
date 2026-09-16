@@ -1544,12 +1544,24 @@ def preview_dpm_solver_steps(dpm_solver, steps, skip_type="time_uniform", t_T=1.
 
 class TokenAdaptiveDPMSolver:
     """
-    Second-order multistep DPM-Solver++ on a token-wise discrete schedule
-    J[K, L]: column `l` of J lists the K diffusion timesteps (strictly
-    decreasing, from `num_timesteps - 1` down to `0`) that position `l`
-    actually visits, so "easy" positions can spend their K calls compressed
-    near the clean end while "hard" positions spread theirs across the full
-    noise range.
+    Multistep DPM-Solver++ on a token-wise discrete schedule J[K, L]: column
+    `l` of J lists the K diffusion timesteps (strictly decreasing, from
+    `num_timesteps - 1` down to `0`) that position `l` actually visits, so
+    "easy" positions can spend their K calls compressed near the clean end
+    while "hard" positions spread theirs across the full noise range.
+
+    `order=2` (default) is DPM-Solver++(2M): the first transition is
+    first-order, every subsequent one uses the second-order multistep
+    correction. `order=1` chains first-order-only transitions for the
+    entire schedule -- this is exactly DDIM (eta=0, deterministic): the
+    order-1 update `x_t = (sigma_t/sigma_s)*x_s - alpha_t*(exp(-h)-1)*x0`
+    algebraically simplifies to `x_t = alpha_t*x0 + sigma_t*eps_pred`, the
+    standard DDIM step, at whatever schedule `J` visits. This is the
+    intended way to get DDIM-equivalent behaviour through this class when
+    the real per-position alpha table is 2-D -- `GaussianDiffusion.
+    ddim_sample_loop` is 1-D-only in its absorption handling (it has none
+    at all, in fact -- see `_apply_absorption`'s docstring) and was never
+    extended for a genuinely per-position schedule.
 
     The denoising network still receives one scalar timestep per forward
     pass (that is how it was trained). `model_fn(x, t_ids)` is expected to
@@ -1557,12 +1569,35 @@ class TokenAdaptiveDPMSolver:
     (e.g. the median over positions where the schedule is genuinely
     adaptive) and return a per-position `pred_xstart` [B, L, D] -- only the
     *solver coefficients* below actually use the full per-position `t_ids`.
+
+    If `denoise=True` and `mean_embed` is given, every arrival at a new `x`
+    also gets the discrete absorbing substitution (Mixed-Space Diffusion's
+    other pillar besides the noise schedule itself) applied to it *before*
+    the next model call reads it -- matching training's `q_sample`, which
+    substitutes into `mean_embed` at the same per-position rate before the
+    model ever sees that timestep. See `_apply_absorption` for the exact
+    correspondence. The very first model call (row 0, on the raw sampling
+    prior) is deliberately left unabsorbed, matching `p_sample_loop`'s own
+    convention of starting from an unmodified `x_T` prior. This applies
+    identically regardless of `order`.
     """
 
-    def __init__(self, model_fn, alphas_cumprod_2d, correcting_x0_fn=None):
+    def __init__(self, model_fn, alphas_cumprod_2d, correcting_x0_fn=None,
+                 denoise=False, denoise_rate=0.2, mean_embed=None, order=2):
+        if order not in (1, 2):
+            raise ValueError(
+                f"TokenAdaptiveDPMSolver only supports order 1 (DDIM-"
+                f"equivalent, first-order-only) or 2 (DPM-Solver++(2M), "
+                f"the default), got order={order}. There is no third-order "
+                f"correction implemented here."
+            )
+        self.order = order
         self.model_fn = model_fn
         self.alpha_bar = alphas_cumprod_2d  # [T, L]
         self.correcting_x0_fn = correcting_x0_fn
+        self.denoise = denoise
+        self.denoise_rate = denoise_rate
+        self.mean_embed = mean_embed
 
     def _coeff(self, t_ids):
         # t_ids: [L], alpha_bar: [T, L]
@@ -1577,6 +1612,32 @@ class TokenAdaptiveDPMSolver:
     @staticmethod
     def _bc(v):
         return v[None, :, None]
+
+    def _apply_absorption(self, x, t_ids):
+        """
+        Discrete absorbing substitution matching training's `q_sample`
+        (`gaussian_diffusion.py`): at the marginal per-position noise level
+        `sigma(t) = sqrt(1 - alpha_bar[t, pos])` -- the SAME quantity
+        `q_sample` scales by `denoise_rate` when building training data,
+        not `p_sample`'s local posterior variance, which is a different
+        (smaller, FIXED_LARGE-beta-derived) quantity -- replace a
+        `Bernoulli(sigma(t) * denoise_rate)` fraction of (batch, position)
+        pairs with the learned soft-absorbing vector `mean_embed`. Uses the
+        real, un-collapsed per-position `alpha_bar` table via `_coeff`, so
+        this stays exact whether every column of the caller's `J` is
+        identical (the uniform-trajectory-with-adaptive-noise case) or
+        genuinely different per position (the true adaptive-trajectory
+        case) -- both are just different `t_ids` inputs to the same formula.
+        """
+        if not (self.denoise and self.mean_embed is not None):
+            return x
+        B, L, _ = x.shape
+        _, sigma, _ = self._coeff(t_ids)  # [L]
+        mask_rate = (sigma * self.denoise_rate).clamp(0.0, 1.0)
+        mask_rate_b = mask_rate[None, :].expand(B, L)  # independent per (batch, position), matching q_sample/p_sample
+        random_mask = mask_rate_b.bernoulli()[..., None].expand(x.shape)
+        mean_embed_expand = self.mean_embed[None, None].expand(x.shape)
+        return torch.where(random_mask == 0, x, mean_embed_expand)
 
     def _predict_x0(self, x, t_ids):
         pred = self.model_fn(x, t_ids)
@@ -1624,33 +1685,68 @@ class TokenAdaptiveDPMSolver:
         prediction, K-1 token-wise transitions, then a prediction at every
         arrival including the final row. J[-1] must be all zeros (t=0); the
         final prediction there is returned as the clean sample.
+
+        `order=1`: every transition is `_first_update` (DDIM-equivalent,
+        see class docstring) -- valid for any K >= 2.
+
+        `order=2` (default): the first transition is `_first_update`
+        (bootstrap; there's no history yet to correct with), every
+        subsequent transition uses `_second_update`. K=2 is a valid,
+        deliberately-supported edge case here too: it makes exactly the
+        first two calls below and returns immediately -- the `for r in
+        range(2, K)` loop that performs the second-order correction is
+        simply empty, which is not invalid, DPM-Solver++ is well-defined at
+        first order; it's identical to what `order=1` would have done for
+        that same K=2 case.
         """
         if J.ndim != 2:
             raise ValueError(f"J must be [K, L], got {tuple(J.shape)}.")
         K, L = J.shape
-        if K < 3:
-            raise ValueError("TokenAdaptiveDPMSolver requires K >= 3.")
+        if K < 2:
+            raise ValueError(
+                "TokenAdaptiveDPMSolver requires K >= 2 (K=2 runs first-order "
+                "only; the second-order correction engages from K=3 onward)."
+            )
         if x.shape[1] != L:
             raise ValueError(f"J has L={L}, but sample has L={x.shape[1]}.")
 
-        # Model call 1 at J[0].
+        # Model call 1 at J[0], read directly off the raw sampling prior --
+        # deliberately unabsorbed, see class docstring. Shared by both orders.
         t_prev = J[0]
         m_prev = self._predict_x0(x, t_prev)
         if callback is not None:
             callback(x, m_prev)
 
-        # First-order transition J[0] -> J[1], then model call 2.
+        if self.order == 1:
+            # Chain first-order (DDIM-equivalent) transitions for every
+            # remaining row -- no history/correction term at all.
+            for r in range(1, K):
+                t_cur = J[r]
+                x = self._first_update(x, t_prev, t_cur, m_prev)
+                x = self._apply_absorption(x, t_cur)
+                m_prev = self._predict_x0(x, t_cur)
+                t_prev = t_cur
+                if callback is not None:
+                    callback(x, m_prev)
+            # J[-1] is t=0. Return the final clean prediction.
+            return m_prev
+
+        # order == 2: first-order bootstrap transition, absorb, then model
+        # call 2 (reads the now-absorbed x, matching training).
         t_cur = J[1]
         x = self._first_update(x, t_prev, t_cur, m_prev)
+        x = self._apply_absorption(x, t_cur)
         m_cur = self._predict_x0(x, t_cur)
         if callback is not None:
             callback(x, m_cur)
 
-        # Second-order multistep transitions. Each arrival gets one model
+        # Second-order multistep transitions. Each arrival gets absorbed
+        # before its model call, same as above; each arrival gets one model
         # call, including the final row, so K rows == K denoiser evaluations.
         for r in range(2, K):
             t_next = J[r]
             x = self._second_update(x, m_prev, m_cur, t_prev, t_cur, t_next)
+            x = self._apply_absorption(x, t_next)
 
             t_prev, t_cur = t_cur, t_next
             m_prev, m_cur = m_cur, self._predict_x0(x, t_cur)

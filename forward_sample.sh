@@ -19,30 +19,42 @@ export OMPI_MCA_btl="^openib"
 
 # ==============================================================================
 # User Configuration (Edit parameters here)
+#
+# Every value below can also be overridden by exporting the same-named
+# environment variable before calling this script (same pattern already
+# used for CUDA_VISIBLE_DEVICES/WANDB_MODE above) -- e.g.:
+#   STEP_MATRIX_PATH=/path/to/schedule_all_positions.csv \
+#   TOKEN_ADAPTIVE_STEPS=5 USE_DPM_SOLVER=false \
+#   OUTPUT_FILE=../../generation_outputs/forward_process/fp_adaptive_K5.txt \
+#   bash forward_sample.sh
+# This lets sweep scripts (e.g. forward_trajectory_sweep.sh) drive this file
+# directly instead of duplicating its argument-building logic -- editing the
+# defaults below is still the normal way to use this script standalone;
+# nothing changes if no env vars are set.
 # ==============================================================================
-CUDA_DEVICE="0"
+CUDA_DEVICE="${CUDA_DEVICE:-0}"
 
 # Point this at whichever checkpoint you want to evaluate, e.g. the latest
 # PLAIN_ema_0.9999_<step>.pt written by forward_train.sh into checkpoints_forward/
-MODEL_PATH="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints_forward/PLAIN_ema_0.9999_170000.pt"
+MODEL_PATH="${MODEL_PATH:-/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints_forward/PLAIN_ema_0.9999_140000.pt}"
 
 # Set path to .npy schedule file, or set to "none" for standard uniform schedule
-ADAPTIVE_SCHEDULE="/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints_forward/adaptive_schedule/alpha_cumprod_step_160000.npy"
+ADAPTIVE_SCHEDULE="${ADAPTIVE_SCHEDULE:-/home/ee/phd/eez248435/tgm-dlm_merged/checkpoints_forward/adaptive_schedule/alpha_cumprod_step_130000.npy}"
 
-OUTPUT_FILE="../../generation_outputs/fp_dpm200_170k_test2.txt"
+OUTPUT_FILE="${OUTPUT_FILE:-../../generation_outputs/forward_process/fp_dpm2_140k_test4.txt}"
 
-NUM_SAMPLES=1000
-BATCH_SIZE=64
-TIMESTEP_RESPACING=1
+NUM_SAMPLES="${NUM_SAMPLES:-1000}"
+BATCH_SIZE="${BATCH_SIZE:-64}"
+TIMESTEP_RESPACING="${TIMESTEP_RESPACING:-1}"
 
 # Random Seeds: single seed "121" or multiple seeds "101,102,103"
-SEEDS="108"
+SEEDS="${SEEDS:-108}"
 
 # --- DPM-Solver++ (fast ODE sampler) ---
-USE_DPM_SOLVER=True
-DPM_SOLVER_STEPS=2
-DPM_SOLVER_ORDER=2
-DPM_SOLVER_METHOD="multistep"
+USE_DPM_SOLVER="${USE_DPM_SOLVER:-True}"
+DPM_SOLVER_STEPS="${DPM_SOLVER_STEPS:-2}"
+DPM_SOLVER_ORDER="${DPM_SOLVER_ORDER:-2}"
+DPM_SOLVER_METHOD="${DPM_SOLVER_METHOD:-multistep}"
 
 # --- Token-adaptive step schedule (per-position reduced-step inference) ---
 # Alternative to DPM-Solver++ above -- mutually exclusive with it (text_sample.py
@@ -51,14 +63,14 @@ DPM_SOLVER_METHOD="multistep"
 #   2. trajectory_analysis.py    gradient -> monitor -> allocate  (Stages 2-4)
 # Stage 4's "allocate" step writes a `<name>_J.npy` file -- point STEP_MATRIX_PATH
 # at that. Set to "" or "none" to disable and use one of the samplers above instead.
-STEP_MATRIX_PATH=""
-TOKEN_ADAPTIVE_STEPS=200
+STEP_MATRIX_PATH="${STEP_MATRIX_PATH:-}"
+TOKEN_ADAPTIVE_STEPS="${TOKEN_ADAPTIVE_STEPS:-200}"
 
 # --- Mixed-Space diffusion (must match what the checkpoint was trained with) ---
-LEARNED_MEAN_EMBED=True
-DENOISE=True
-DENOISE_RATE=0.2
-REG_RATE=0.0
+LEARNED_MEAN_EMBED="${LEARNED_MEAN_EMBED:-True}"
+DENOISE="${DENOISE:-True}"
+DENOISE_RATE="${DENOISE_RATE:-0.2}"
+REG_RATE="${REG_RATE:-0.1}"
 
 # --- Vocab (must match what the checkpoint was trained with) ---
 # The forward checkpoint likely uses its own vocab, not the default ChEBI/
@@ -68,7 +80,7 @@ REG_RATE=0.0
 # Verify with: wc -l "${DATASETS_DIR}/generate_vocab.txt" against the
 # checkpoint's word_embedding.weight size reported in any past error, minus 3
 # for [PAD]/[SOS]/[EOS].
-VOCAB_PATH="/home/ee/phd/eez248435/tgm-dlm_merged/datasets/FORWARD/generate_vocab.txt"
+VOCAB_PATH="${VOCAB_PATH:-/home/ee/phd/eez248435/tgm-dlm_merged/datasets/FORWARD/generate_vocab.txt}"
 # ==============================================================================
 
 # --- Determine Directory Structure ---
@@ -82,7 +94,7 @@ else
 fi
 
 SCRIPTS_DIR="${PROJECT_ROOT}/improved-diffusion/scripts"
-DATASETS_DIR="${PROJECT_ROOT}/datasets/FORWARD"
+DATASETS_DIR="${DATASETS_DIR:-${PROJECT_ROOT}/datasets/FORWARD}"
 OUT_DIR="${PROJECT_ROOT}/generation_outputs"
 
 # --- Seed Configuration ---
