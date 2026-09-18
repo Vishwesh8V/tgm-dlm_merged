@@ -42,6 +42,8 @@ evaluation_outputs_uniform_200test_3seed/*
 reduced_step_outputs/trajectory_forward/*
 reduced_step_outputs/trajectory_retro/*
 reduced_step_outputs/*
+visualization_gen_outputs/*
+sweep_logs/*
 
 # Checkpoints / model weights
 *.pt
